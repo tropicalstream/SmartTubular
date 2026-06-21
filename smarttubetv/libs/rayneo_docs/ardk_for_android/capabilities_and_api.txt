@@ -1,0 +1,740 @@
+1. Binocular Display
+To implement Binocular Display, in addition to duplicating the same UI layout on both the left and right sides, any modification made to the left view must also be applied to the right layout. These requirements introduce a significant amount of boilerplate code. To address this issue, the SDK provides the BindingPair utility class based on ViewBinding. After passing the ViewBinding objects corresponding to the left and right layouts to its constructor, you can:
+- Use the updateView method to operate on both layouts simultaneously.
+- Use the setLeft method to operate only on the left layout.
+- Use the checkIsLeft method within the updateView block to determine whether the current operation is on the left or right layout.
+
+1.1 Binocular Display Components
+Binocular Display operations are primarily handled by the BindingPair utility class based on ViewBinding. The following UI components are encapsulated based on BindingPair:
+- Activity Level: BaseMirrorActivity
+  - Implements the logic for automatically mirroring the layout view of an Activity. Developers only need to focus on the business UI requirements and develop layout files in the native XML layout manner to achieve Binocular Display effects. Refer to FusionVisionActivity in the sample or any subclass of BaseMirrorActivity for implementation details.
+[Image]
+
+- Fragment Level: BaseMirrorFragment
+  - Implements Binocular Display encapsulation at the Fragment level. It is added in the same way as native Fragments but should not be added to a BaseMirrorActivity. Refer to FragmentDemoActivity in the sample for implementation details.
+[Image]
+Note: For scenarios where Fragment + RecyclerView are suitable, you can refer to FragmentRecyclerViewDemo in the sample.
+- View Level:
+  - MirrorContainerView** (Composition-based)**: Refer to MirrorContainerViewActivity for usage. Ensure that the mirrorContainer.bindTo method is implemented; otherwise, Binocular Display will not take effect.
+  - BaseMirrorContainerView** (Inheritance-based)**: Refer to com.ffalcon.mercury.android.sdk.demo.ui.wedget.TitleView for usage. Note that MirrorView should not be added to a BaseMirrorActivity.
+
+- Toast: FToast
+  - A universal Toast encapsulation that supports Binocular Display. Refer to FusionVisionHomeActivity for usage.
+
+- Dialog: FDialog
+  - A universal Dialog encapsulation that supports Binocular Display. Refer to DialogActivity for usage.
+
+Except for FToast and FDialog, which are independent components, other Binocular Display components can be reasonably assembled according to business requirements to achieve a perfect dual-screen Binocular Display effect.
+
+1.2 updateView & setLeft
+mBindingPair.updateView{}:
+All Binocular Display components mentioned above use the BindingPair utility class to achieve left-right layout mapping. A single layout file is mapped to both the left and right screens, so there are actually two layouts in memory. To handle繁琐的镜像操作, the SDK provides the mBindingPair.updateView method to simultaneously update the same component in both layouts.
+
+Example:
+// All operations within the updateView block will be mapped to both left and right layouts
+mBindingPair.updateView {
+    tvTitle.text = "my title"
+}
+// Equivalent to:
+mBindingPair.left.tvTitle.text = "my title"
+mBindingPair.right.tvTitle.text = "my title"
+
+Note: Due to this feature, it is recommended to perform only UI-level update operations within the updateView block. Modifying external source data or binding events in this method will cause these operations to execute twice, leading to unpredictable consequences.
+For external data updates or event binding, use the mBindingPair.setLeft method.
+
+mBindingPair.setLeft{}:
+mBindingPair.setLeft {
+    focusHolder.addFocusTarget(
+        // Typically, events are bound to the left view component
+        FocusInfo(
+            btnEvent,
+            eventHandler = { action -> handleAction(action) },
+            focusChangeHandler = { hasFocus ->
+                // If you need to synchronously update the components on both sides in response to an event, you can call the updateView method again at this time.
+                mBindingPair.updateView {
+                    triggerFocus(hasFocus, btnEvent, mBindingPair.checkIsLeft(this))
+                }
+            }
+        )
+    )
+    focusHolder.currentFocus(mBindingPair.left.btnEvent)
+}
+
+Of course, if in complex business scenarios, you need to integrate logic in updateView but don't want it to be called twice, you can also judge the current execution area within the block of updateView.
+mBindingPair.updateView {
+    // Do something...
+
+    // Check if it's the left layout
+    if (mBindingPair.checkIsLeft(this)){
+        // Only execute this code on the left layout
+    }
+}
+Refer to the sample code for more specific scenario implementations.
+
+1.3 Video Binocular Fusion (SurfaceView)
+The binocular fusion component mentioned above only supports mirroring and binocular fusion operations for regular UI components. However, for scenarios involving video playback that require the use of SurfaceView, additional special processing is required. Rayneo provides the MirroringView component to support such binocular fusion scenarios. For detailed usage, please refer to VideoPlayActivity in the sample. The main steps are as follows:
+1. Ensure that the video playback component (SurfaceView) and the mirroring component (MirroringView) in the layout are placed on different screens respectively.
+[Image]
+2. Set the SurfaceView to the MirroringView and enable Mirroring. At this point, while the surface starts rendering, the frame will also be mirrored to the MirroringView:
+binding.textureView.let { leftTexture ->
+    binding.mirrorView.setSource(leftTexture)
+    binding.mirrorView.startMirroring()
+}
+
+........
+
+// Stop where necessary
+override fun onDestroy() {
+    super.onDestroy()
+    binding.mirrorView.stopMirroring()
+    mPlayer?.release()
+}
+
+2. Focus Management
+2.1 Focus Description
+Since the glasses screen cannot be directly touched like a phone, focus switching must be manually managed. Typically:
+- Swiping forward and backward switches the focus.
+- A single click triggers the event of the focused view.
+- A double click exits the focus and returns to the previous level.
+
+The simplest implementation of focus management involves maintaining an index where different indices correspond to different focusable views. However, this approach is not easily maintainable for complex pages.
+A more structured approach:
+
+// 1. Create a FocusHolder object
+val focusHolder = FocusHolder(true)
+....
+
+// 2. Use views from the left layout as focus targets
+mBindingPair.setLeft {
+    // 2.1 Create a FocusInfo object
+    val btn1Info = FocusInfo(
+        btn1,
+        eventHandler = { action ->
+            // Handle events
+            when (action) {
+                is TempleAction.Click -> {
+                    FToast.show("bt1 click")
+                }
+                else -> Unit
+            }
+        },
+        focusChangeHandler = { hasFocus ->
+            // Handle focus changes
+            mBindingPair.updateView {
+                btn1.setBackgroundColor(getColor(if(hasFocus) R.color.purple_200 else R.color.black))
+            }
+        }
+    )
+
+    // 2.2 Add multiple FocusInfo objects for the same level
+    focusHolder.addFocusTarget(
+        // First focus position
+        btn1Info,
+        // Second focus position
+        FocusInfo(
+            btn2,
+            eventHandler = {action ->
+                when(action) {
+                    is TempleAction.Click -> {
+                        FToast.show("bt2 click")
+                    }
+                    else -> Unit
+                }
+            },
+            focusChangeHandler = { hasFocus ->
+                mBindingPair.updateView {
+                    btn2.setBackgroundColor(getColor(if(hasFocus) R.color.purple_200 else R.color.black))
+                }
+            }
+        ),
+        // More focus positions...
+    )
+
+    // 2.3 Set the default focus position
+    focusHolder.currentFocus(mBindingPair.left.btn1)
+}
+
+// 3. Create a FixPosFocusTracker object
+fixPosFocusTracker = FixPosFocusTracker(focusHolder).apply {
+    // 3.1 Set the initial focus state
+    focusObj.hasFocus = true
+}
+....
+
+// 4. Connect with the TempleAction event stream
+lifecycleScope.launch {
+    repeatOnLifecycle(Lifecycle.State.RESUMED) {
+        templeActionViewModel.state.collect {
+            FLogger.i("DemoActivity", "action = $it")
+            when (it) {
+                is TempleAction.DoubleClick -> {
+                    // Handle double-click exit logic
+                    finish()
+                }
+                else -> fixPosFocusTracker?.handleFocusTargetEvent(it)
+            }
+        }
+    }
+}
+
+This process handles focus management for views at the same level. FixPosFocusTracker can itself be used as a target for FocusInfo, allowing nested structures to handle complex focus switching scenarios.
+
+For RecyclerView, focus management differs depending on whether focus positions are fixed:
+- Fixed Focus Positions: Use RecyclerViewSlidingTracker.
+- Moving Focus Positions: Use RecyclerViewFocusTracker.
+
+Refer to FixedFocusPosRVActivity and MovedFocusPosRVActivity in the SDK demo for implementation details.
+For other scenarios, such as the overall focus switching in a custom View, you can handle it uniformly by implementing the IFocusable interface. Only when the hasFocus property is true will it respond to events.
+Both RecyclerViewSlidingTracker, RecyclerViewFocusTracker, and IFocusable objects can be used as targets for FocusInfo.
+2.2 Dynamic Focus
+This content is only supported in a Feishu Docs
+Dynamically adjust the position, state, displayed content, or interactive priority of the "focus view" in the view in real time based on user interaction, eye tracking, scene changes, or device posture — simply put, it means making the "core view that the user needs to focus on/operate at present" change dynamically with the scene, rather than being fixed at a specific position or state.
+1. The user turns their head to look at the left-side menu → the focus automatically switches from the right-side pop-up window to the left-side menu;
+2. A new interactive target (e.g., a virtual button) appears in the scene → dynamically add this button as a new focus view;
+Dynamically adjusting the focus view in the eye-aligned view of the glasses relies heavily on view components. Sample code for dynamically adding a focus view is as follows (for details, refer to DynamicFocusTargetActivity in the sample):
+private fun addDynamicFocus() {
+    // Extension function API for dynamically adding a focus View
+    // Use a mutable reference because the handle needs to be used in the eventHandler
+    var handle: FocusViewHandle<View>? = null
+    handle = mBindingPair.addFocusView(
+        parent = mBindingPair.left.llParent,
+        viewFactory = {
+        // Dynamically add a Button here, adjust according to actual requirements
+            Button(this@DynamicFocusTargetActivity).apply {
+                text = "dynamic focus target"
+                background = null
+            }
+        },
+        focusHolder = focusHolder,
+        focusConfig = {
+            // Set layout parameters (e.g.: LinearLayout, adjust according to the actual view)
+            layoutParamsFactory = { parent, view ->
+                LinearLayout.LayoutParams(
+                    150.dp,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    setMargins(
+                        20.dp,
+                        5.dp,
+                        20.dp,
+                        5.dp
+                    )
+                }
+            }
+
+            // Handle the response events of the view here
+            eventHandler = { action ->
+                when (action) {
+                    is TempleAction.Click -> {
+                        FToast.show("dynamic focus target click!!")
+                    }
+
+                    else -> Unit
+                }
+            }
+            // Handle view focus switching here
+            onFocusChange = { view, hasFocus, isLeft ->
+                triggerFocus(hasFocus, view, isLeft)
+            }
+        }
+    )
+
+    // focusHandles is a mutable list for managing dynamically added focus views, add as needed
+    focusHandles.add(handle)
+
+    currentDynamicFocus = handle
+}
+Sample code for removing a dynamic focus view is as follows:
+currentDynamicFocus.clearFocusView()
+3. Touch Events & Event Response
+Currently, both left and right temple arms can trigger MotionEvent TP events. Unlike the 2D TP events on mobile phones, TP events generated by the temple arms are 1D, with the X coordinate changing dynamically and the Y coordinate fixed. In addition to the temple arms, ring accessories (after pairing) also generate TP events.
+
+Event Response Mechanism
+When TP events are dispatched to the Activity or View level, the raw MotionEvent is passed to the TouchDispatcher during the dispatch process. The TouchDispatcher converts native TP events into gestures such as single tap, long press, double tap, triple tap, forward swipe, and backward swipe (some gestures have default system sounds), which are exposed via the CommonTouchCallback interface. Callers only need to implement business logic based on these gestures.
+
+Based on TouchDispatcher and CommonTouchCallback, the following Activity-level encapsulations are provided:
+- BaseTouchActivity: Automatically registers gesture listeners.
+- BaseEventActivity: Inherits from BaseTouchActivity and converts gestures into Kotlin Flow event streams ( BaseMirrorActivity inherits from BaseEventActivity), mapping events to TempleAction subclasses.
+Event Listening Example:
+class TPEventActivity : BaseMirrorActivity<ActivityTpEventBinding>() {
+    private var fixPosFocusTracker: FixPosFocusTracker? = null
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        initFocusTarget()
+        initEvent()
+    }
+
+    private fun initFocusTarget() {
+        val focusHolder = FocusHolder(false)
+        mBindingPair.setLeft {
+            focusHolder.addFocusTarget(
+                FocusInfo(
+                    btnEvent,
+                    eventHandler = { action -> handleAction(action) },
+                    focusChangeHandler = { hasFocus ->
+                        mBindingPair.updateView {
+                            triggerFocus(hasFocus, btnEvent, mBindingPair.checkIsLeft(this))
+                        }
+                    }
+                )
+            )
+            focusHolder.currentFocus(mBindingPair.left.btnEvent)
+        }
+        fixPosFocusTracker = FixPosFocusTracker(focusHolder).apply {
+            focusObj.reqFocus()
+        }
+    }
+
+    private fun handleAction(action: TempleAction) {
+        when (action) {
+            is TempleAction.LongClick -> {
+                FToast.show("LongClick")
+            }
+
+            is TempleAction.Click -> {
+                FToast.show("Click")
+            }
+
+            is TempleAction.DoubleClick -> {
+                FToast.show("DoubleClick")
+                finish()
+            }
+
+            is TempleAction.TripleClick -> {
+                FToast.show("TripleClick")
+            }
+
+            is TempleAction.SlideBackward -> {
+                FToast.show("SlideBackward")
+            }
+
+            is TempleAction.SlideForward -> {
+                FToast.show("SlideForward")
+            }
+
+            is TempleAction.SlideUpwards -> {
+                FToast.show("SlideUpwards")
+            }
+
+            is TempleAction.SlideDownwards -> {
+                FToast.show("SlideDownwards")
+            }
+
+
+            else -> Unit
+        }
+    }
+
+    private fun initEvent() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                templeActionViewModel.state.collect {
+                    fixPosFocusTracker?.handleFocusTargetEvent(it)
+                }
+            }
+        }
+    }
+
+    private fun triggerFocus(hasFocus: Boolean, view: View, isLeft: Boolean) {
+        view.setBackgroundColor(getColor(if (hasFocus) com.ffalcon.mercury.android.sdk.R.color.color_rayneo_theme_0 else R.color.black))
+        // 3D effect
+        make3DEffectForSide(view, isLeft, hasFocus)
+    }
+}
+
+For scenarios where no specific component needs to listen for TP events (e.g., implementing native Activity back functionality), simply connect to the TempleAction event stream. The recommended practice for glasses is to exit the page via a double tap:
+class DialogActivity : BaseMirrorActivity<LayoutDialogBinding>() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        initEvent()
+    }
+
+    private fun initEvent() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                templeActionViewModel.state.collect {
+                    FLogger.i("DemoActivity", "action = $it")
+                    when (it) {
+                        is TempleAction.DoubleClick -> {
+                            finish()
+                        }
+                        is TempleAction.Click -> {
+                            showDialog()
+                        }
+                        else -> Unit
+                    }
+                }
+            }
+        }
+    }
+
+For apps migrated from X2 SDK to X3:
+- Use DeviceUtil.isX3Device() to detect Rayneo X3:
+if (DeviceUtil.isX3Device()) {
+    // Run on Rayneo X3
+} else {
+    // Run on Rayneo X2
+}
+
+3.1 Changes to CommonTouchBack in Rayneo X3 SDK
+New methods (not available in X2 series):
+// Upward swipe
+open fun onTPSlideUpwards(args: FlingArgs): Boolean {
+    return false
+}
+
+// Downward swipe
+open fun onTPSlideDownwards(args: FlingArgs): Boolean {
+    return false
+}
+
+// Double-finger tap
+open fun onTPDoubleFingerClick() {
+}
+
+// Double-finger long press
+open fun onTPDoubleFingerLongClick() {
+}
+
+Modified method:
+onTPSlideContinuous(delta: Float, longClick: Boolean = false, vertical: Boolean = false)
+- Added vertical parameter to indicate vertical swipe direction.
+New feature:
+- filterMode property in CommonTouchCallback:
+  - OnlyX: onTPSlideContinuous returns only X-axis swipe data.
+  - OnlyY: onTPSlideContinuous returns only Y-axis swipe data.
+  - Supported only on Rayneo X3.
+- TempleAction.TpSlideContinuous now includes swipe direction (X/Y axis).
+
+3.2 SlideBackward & SlideForward Handling
+The mapping between touchpad swipes and UI events on Rayneo glasses has two modes (configurable in settings, see video for path):
+This content is only supported in a Feishu Docs
+Natural Mode (Default)
+- Touchpad-UI mapping:
+  - Swipe from temple to lens: TempleAction.SlideBackward
+  - Swipe from lens to temple: TempleAction.SlideForward
+[Image]
+Non-Natural Mode
+- Touchpad-UI mapping:
+  - Swipe from temple to lens: TempleAction.SlideForward
+  - Swipe from lens to temple: TempleAction.SlideBackward
+[Image]
+
+4. Following Hand Effect (Smooth Scrolling)
+
+While the TouchDispatcher and CommonTouchCallback suffice for general scenarios, achieving the smooth scrolling effect seen in mobile lists is challenging due to two main limitations:
+1. Event Processing Layer: TouchDispatcher processes raw events into gestures, but smooth scrolling requires direct handling of raw events.
+2. Coordinate System Mismatch: Raw TP events have a fixed Y-coordinate, while lists can be horizontal or vertical and only respond to events within their bounds. This requires dynamically adjusting coordinates:
+  - Horizontal Lists: Modify the Y-coordinate based on the list's center.
+  - Vertical Lists: Swap X and Y coordinates and fix the X-coordinate.
+
+Implementation Approach:
+- Continue feeding raw events to TouchDispatcher for gesture detection (clicks, taps, etc.), but ignore forward/backward swipes.
+- Use a fixed focus position on the RecyclerView to intercept the raw event stream.
+- Generate new MotionEvent instances with adjusted coordinates, then feed them to the RecyclerView and recycle them afterward.
+- The new event stream handles only scrolling, not click events.
+
+Three Common Scenarios:
+1. Fixed Focus + List Scrolling: Use RecyclerViewSlidingTracker.
+2. Moving Focus + List Scrolling: Use RecyclerViewFocusTracker with distance-based focus changes.
+3. Moving Focus + Fixed View: Use FixPosFocusTracker.
+
+Key Logic for Moving Focus:
+After sliding a threshold distance (e.g., 50dp), trigger focus changes (forward/backward or up/down) based on the swipe direction.
+
+Example Code for Fixed Focus (Coordinate Adjustment):
+// Intercept raw events for smooth scrolling
+recyclerViewSlidingTracker.observeOriginMotionEventStream(
+    motionEventDispatcher
+) { event ->
+    // Create a new MotionEvent with adjusted coordinates (swap X and Y as needed)
+    MotionEvent.obtain(
+        event.downTime,
+        event.eventTime,
+        event.action,
+        320f, // Fixed X-coordinate (adjust based on layout)
+        event.x, // Use original X as new Y for vertical lists
+        event.metaState
+    ).apply {
+        val e = this
+        FLogger.d(
+            "onReceiveEvent: x = ${e.x}, y = ${e.y}, action = ${e.actionName()}, deviceId = ${e.deviceId}"
+        )
+    }
+}
+
+lifecycleScope.launchWhenResumed {
+    val templeActionViewModel =
+        ViewModelProvider(this@FixedFocusPosRVActivity).get<TempleActionViewModel>()
+    templeActionViewModel.state.collect {
+        if (!favoriteTracker.focusObj.hasFocus || !this.isActive || it.consumed) {
+            return@collect
+        }
+        recyclerViewSlidingTracker.handleActionEvent(it) { action ->
+            when (action) {
+                is TempleAction.DoubleClick -> finish()
+                is TempleAction.Click -> {
+                    if (!action.consumed) {
+                        (mBindingPair.left.recyclerView.adapter as FixedFocusPosAdapter)
+                            .getCurrentData()?.apply {
+                                FToast.show(displayName)
+                            }
+                    }
+                }
+                else -> {}
+            }
+        }
+    }
+}
+
+Explanation:
+- motionEventDispatcher (from BaseTouchActivity) intercepts the raw event stream.
+- observeOriginMotionEventStream adjusts coordinates (swaps X/Y for vertical lists) to make the events consumable by the RecyclerView.
+- See FixedFocusPosRVActivity for the complete implementation.
+
+4.1 FixPosFocusTracker
+The constructor parameters of FixPosFocusTracker are as follows (the current default values correspond to the default mode of Rayneo's in-house applications):
+kotlin
+/** Sliding distance threshold, only trigger focus switch operation when exceeding this distance */
+const val IGNORE_DELTA = 50
+
+/**
+ * Fixed position focus switch tracking logic handler
+ */
+class FixPosFocusTracker(
+    val focusHolder: FocusHolder,
+    /** Whether to support tracking */
+    private val continuous: Boolean = false,
+    /** Whether to switching focus vertically or horizontally */
+    private val isVertical: Boolean = true,
+    /** Sliding distance to trigger focus switch */
+    private val ignoreDelta: Int = IGNORE_DELTA
+)
+FocusHolder: Serves as the management class for focus views. Its constructor includes a loop parameter, which indicates whether focus switching is circular. In other words, when the focus is locked on the last/first focus view, triggering the next()/previous() operation for focus again will focus on the first/last focus view if loop is true. The default value is false (non-circular), meaning triggering next()/previous() will result in no action; otherwise, the focus will cycle through the entire focus list.
+/**
+ * Unified tool class for handling focus switching
+ * @param [loop] Whether to enable circular focus switching
+ */
+class FocusHolder(private val loop: Boolean = false)
+continuous: Whether to enable continuous sliding mode? The default value is false (single-step sliding mode), where each slide triggers only one next()/previous() focus operation. When set to true, focus switching is based on the total sliding distance, allowing multiple consecutive next()/previous() focus switches.
+isVertical: Whether to only accept vertical sliding for focus switching. The default value is true; if set to false, only horizontal sliding is accepted for focus switching by default.
+ignoreDelta: Sliding distance threshold for focus switching. The focus switching logic is only triggered when the sliding distance exceeds this threshold.
+The interaction between these parameters is as follows:
+Mode
+FocusHolder.loop
+continuous
+isVertical
+ignoreDelta
+Continuous Sliding
+Affected
+TRUE
+Unaffected
+Affected
+Single-step Sliding
+Affected
+false (default)
+Affected
+Affected
+
+5. 3D Effect Implementation
+
+In the Android native environment, a pseudo-3D effect is achieved using binocular parallax. The core principle involves offsetting views in the left and right layouts in opposite directions to create depth perception:
+- Left Layout: Views are shifted right.
+- Right Layout: Views are shifted left.
+- Varying offset values create different depths, resulting in a 3D effect when viewed through both eyes.
+
+SDK Methods:
+// Apply 3D effect to both left and right views simultaneously
+make3DEffect(left.slideView, right.slideView, true, 10f)
+
+// Apply 3D effect to a single view (specify left/right)
+make3DEffectForSide(this.ivSelectHover, isLeft, true)
+Parameters:
+- leftView/rightView: Views from left/right layouts.
+- isLeft: Boolean indicating if the view is from the left layout.
+- enabled: Enable/disable the effect.
+- depth: Depth intensity (higher values create stronger 3D effects).
+
+6. Audio Capture Modes
+Developing audio applications for RayNeo glasses follows similar steps to general Android audio development. For microphone recording, RayNeo glasses offer specialized recording modes, which differ slightly between X2 and X3:
+
+X2 Supported Recording Modes
+Each APK must set the recording mode via AudioManager.setParameter("audio_source=xxxx") when using the microphone:
+Mode
+Description
+Example
+audio record
+Not yet configured
+setParameters("audio_source_record=sound")
+camera record
+Uses 2 temple microphones, captures full sound without noise cancellation
+setParameters("audio_source_record=camcorder")
+translation
+Uses 3 microphones, ignores wearer's voice, captures external sound
+setParameters("audio_source_record=translation")
+voice assistant
+Uses 2 temple microphones, prioritizes wearer's voice
+setParameters("audio_source_record=voiceassistant")
+Best Practice: To ensure exclusive microphone access, reset the mode to off when finishing recording:
+setParameters("audio_source_record=off")
+
+X3 Supported Recording Modes
+This content is only supported in a Feishu Docs
+7. Camera Development
+Camera development for RayNeo glasses is identical to standard Android camera development. Refer to developer.android.com for details and ensure proper permission handling and resource release. The camera2 API is recommended, with a detailed implementation in the sample CameraActivity demonstrating:
+- Dual-screen camera preview
+- Capturing single frames from the camera
+
+Camera Resolution Enumeration Example:
+private fun enumerateCameraResolutions() {
+    val cameraManager = getSystemService(CAMERA_SERVICE) as CameraManager
+    val cameraIdList = cameraManager.cameraIdList
+
+    for (cameraId in cameraIdList) {
+        val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+
+        if (map != null) {
+            val previewSizes = map.getOutputSizes(SurfaceTexture::class.java)
+            val pictureSizes = map.getOutputSizes(ImageFormat.JPEG)
+
+            FLogger.d("Camera ID: $cameraId")
+            FLogger.d("Supported Preview Sizes:")
+            for (size in previewSizes) {
+                FLogger.d("  ${size.width}x${size.height}")
+            }
+
+            FLogger.d("Supported Picture Sizes:")
+            for (size in pictureSizes) {
+                FLogger.d("  ${size.width}x${size.height}")
+            }
+        }
+    }
+}
+Source code example of SnapdragonCamera (Image capture works normally when the AE convergence status = 2):
+https://github.com/Lh1600852534/snapdragonCamera/blob/master/src/com/android/camera/CaptureModule.java
+
+VGA camera
+There is also a standalone VGA camera on the Rayneo X3 glasses, which is specifically used for spatial positioning. The supported parameters are as follows:
+2025-09-25 18:13:32.490  1583-1583  camera                  com.ffalcon.mercury.android.sdk      D  Camera ID: 1
+2025-09-25 18:13:32.490  1583-1583  camera                  com.ffalcon.mercury.android.sdk      D  Supported Preview Sizes:
+2025-09-25 18:13:32.491  1583-1583  camera                  com.ffalcon.mercury.android.sdk      D    640x480
+2025-09-25 18:13:32.491  1583-1583  camera                  com.ffalcon.mercury.android.sdk      D    640x400
+2025-09-25 18:13:32.491  1583-1583  camera                  com.ffalcon.mercury.android.sdk      D    640x360
+2025-09-25 18:13:32.491  1583-1583  camera                  com.ffalcon.mercury.android.sdk      D    480x360
+2025-09-25 18:13:32.491  1583-1583  camera                  com.ffalcon.mercury.android.sdk      D    352x288
+2025-09-25 18:13:32.491  1583-1583  camera                  com.ffalcon.mercury.android.sdk      D    320x240
+2025-09-25 18:13:32.491  1583-1583  camera                  com.ffalcon.mercury.android.sdk      D    320x180
+2025-09-25 18:13:32.491  1583-1583  camera                  com.ffalcon.mercury.android.sdk      D    176x144
+2025-09-25 18:13:32.491  1583-1583  camera                  com.ffalcon.mercury.android.sdk      D  Supported Picture Sizes:
+2025-09-25 18:13:32.491  1583-1583  camera                  com.ffalcon.mercury.android.sdk      D    640x480
+2025-09-25 18:13:32.491  1583-1583  camera                  com.ffalcon.mercury.android.sdk      D    640x400
+2025-09-25 18:13:32.491  1583-1583  camera                  com.ffalcon.mercury.android.sdk      D    640x360
+2025-09-25 18:13:32.492  1583-1583  camera                  com.ffalcon.mercury.android.sdk      D    480x360
+2025-09-25 18:13:32.492  1583-1583  camera                  com.ffalcon.mercury.android.sdk      D    352x288
+2025-09-25 18:13:32.492  1583-1583  camera                  com.ffalcon.mercury.android.sdk      D    320x240
+2025-09-25 18:13:32.492  1583-1583  camera                  com.ffalcon.mercury.android.sdk      D    320x180
+2025-09-25 18:13:32.492  1583-1583  camera                  com.ffalcon.mercury.android.sdk      D    176x144
+
+8. IMU Data Acquisition
+Accelerometer, gyroscope, and magnetometer data can be obtained and displayed via Android's native API. For details, please refer to the IMUActivity in the demo.
+For applications that require device posture (e.g., rotation angle), using raw sensor data directly is extremely complex. Android provides software sensors, which automatically fuse data from multiple hardware sensors to deliver smoother and more accurate results.
+Game Rotation Vector Sensor
+This is the most suitable sensor for games and real-time posture tracking. It does not use a magnetometer, so it is not affected by magnetic field interference. However, it cannot provide absolute orientation (e.g., north-pointing).
+// Obtain the sensor in onCreate
+private var gameRotationVectorSensor: Sensor? = null
+
+// Add inside the onCreate method:
+gameRotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
+
+// Register in onResume
+gameRotationVectorSensor?.let {
+    sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST)
+}
+
+// Process data in onSensorEvent
+Sensor.TYPE_GAME_ROTATION_VECTOR -> {
+    // event.values contains 4 components: [xsin(θ/2), ysin(θ/2), z*sin(θ/2), cos(θ/2)]
+    // This is a Quaternion representing rotation
+    val x = event.values[0]
+    val y = event.values[1]
+    val z = event.values[2]
+    val w = event.values[3]
+    // You can convert the quaternion to Euler angles (pitch, roll, yaw) for easier understanding
+    // Note: Since the magnetometer is not used, the yaw angle is relative and will drift.
+Convert quaternion to Euler angles (simple example)
+private fun quaternionToEuler(x: Float, y: Float, z: Float, w: Float): FloatArray {
+    val euler = FloatArray(3)
+
+    // Pitch angle (pitch, rotation around X-axis)
+    val sinP = 2.0f * (w * x + y * z)
+    val cosP = 1.0f - 2.0f * (x * x + y * y)
+    euler[0] = Math.atan2(sinP.toDouble(), cosP.toDouble()).toFloat()
+
+    // Roll angle (roll, rotation around Y-axis)
+    val sinR = 2.0f * (w * y - z * x)
+    euler[1] = if (Math.abs(sinR) >= 1) {
+        (Math.PI / 2).toFloat() * Math.signum(sinR)
+    } else {
+        Math.asin(sinR.toDouble()).toFloat()
+    }
+
+    // Yaw angle (yaw, rotation around Z-axis)
+    val sinY = 2.0f * (w * z + x * y)
+    val cosY = 1.0f - 2.0f * (y * y + z * z)
+    euler[2] = Math.atan2(sinY.toDouble(), cosY.toDouble()).toFloat()
+
+    // Convert radians to degrees (optional)
+    euler[0] = Math.toDegrees(euler[0].toDouble()).toFloat()
+    euler[1] = Math.toDegrees(euler[1].toDouble()).toFloat()
+    euler[2] = Math.toDegrees(euler[2].toDouble()).toFloat()
+
+    return euler
+}
+Sampling Rate Constant
+When registering a listener, you can choose different sampling rates:
+- SENSOR_DELAY_FASTEST: Fastest, with the highest possible frequency.
+- SENSOR_DELAY_GAME: Suitable for game rate.
+- SENSOR_DELAY_NORMAL: Default rate, suitable for screen orientation changes.
+- SENSOR_DELAY_UI: Suitable for User Interface changes.
+Best Practice: Always remember to call sensorManager.unregisterListener(this) in onPause() to avoid background power consumption.
+
+9. Mobile Connection & GPS Streaming
+Mobile Connection Status
+Monitor phone connection status using the MobileState class:
+private fun collectBleStatus() {
+    MobileState.isMobileConnected().onEach { isConnected ->
+        FLogger.d("isMobileConnected:$isConnected")
+        mBindingPair.updateView {
+            tvBleStatus.text = if (isConnected) "connect" else "disconnect"
+        }
+    }.launchIn(lifecycleScope)
+}
+
+GPS Streaming from Connected Phone
+1. Integrate the IPC SDK (refer to IPCSDK for Android)
+2. Implement GPS streaming as shown in IPC SDK Sample or APIActivity in the main sample.
+Note: The onResponse callback runs on a background thread; ensure UI updates are performed on the main thread.
+private val response = OnResponseListener { response ->
+    if (response?.getData() == null) return@OnResponseListener
+    try {
+        val jo = JSONObject(response.getData())
+        if (jo.has("mLatitude") && jo.has("mLongitude") && jo.has("mAltitude")) { // GPS data
+            val mProvider = jo.getString("mProvider")
+            val mTime = jo.getLong("mTime")
+            val mElapsedRealtimeNanos = jo.getLong("mElapsedRealtimeNanos")
+            val mLatitude = jo.getDouble("mLatitude")
+            val mLongitude = jo.getDouble("mLongitude")
+
+            // Switch to UI thread for updates
+            runOnUiThread {
+                mBindingPair.updateView {
+                    tvTvLocationInfo.text = "$mLatitude,$mLongitude"
+                }
+            }
+        }
+    } catch (e: JSONException) {
+        e.printStackTrace()
+    }
+}

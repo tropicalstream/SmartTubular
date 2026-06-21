@@ -1,0 +1,120 @@
+This guide explains how to build a production‑ready Android app for the RayNeo X-Series Glasses using standard Android tooling.
+You’ll learn:
+-  What’s different from developing a regular phone app
+-  The platform‑specific limitations you need to keep in mind
+-  How to integrate the RayNeo AR SDK to address those differences
+X-Series Glasses is a pair of AR glasses running a full Android 12 stack. Compared with a phone, you’ll run into two key architectural differences:
+ Dual Displays – A phone has one screen, the X3 has two:
+- the left panel projects to the left eye and the right to the right eye. Android still gives you one “logical screen,” which means a vanilla phone UI will tear in half—left eye shows the left half, right eye shows the right half, and the two overlap.
+- To fix binocular fusion, you must render each piece of UI twice—once per eye. The RayNeo AR SDK ships drop‑in base components (View, Activity, Dialog, Toast, etc.) that handle this automatically so you don’t have to copy‑paste boilerplate.
+Input & Focus – A phone’s touch events are fully 2‑D (X and Y). The X3 exposes 2‑D coordinates as well, but you still need an explicit focus system. If you already have an X2 app, you can migrate it simply by upgrading to the new SDK.
+
+Device Introduction
+ARDK Download
+Quick Start
+Capabilities & API
+IPCSDK for Android
+ADB
+
+Function Point
+Description
+Core Components
+Binocular Display
+
+Sight Merging Component
+Implements mirroring effect for left-right dual-screen layout to reduce duplicate code.
+BindingPair
+
+Activity-Level Sight Merging
+Automatically mirrors layout views, allowing developers to focus on business UI.
+BaseMirrorActivity
+
+Fragment-Level Sight Merging
+Sight merging encapsulation at the Fragment level, requiring independent use (cannot be added to BaseMirrorActivity).
+BaseMirrorFragment
+
+View-Level Sight Merging
+Sight merging views based on composition (MirrorContainerView) and inheritance (BaseMirrorContainerView).
+MirrorContainerView, BaseMirrorContainerView
+
+Toast Sight Merging
+Encapsulation of universal Toast supporting sight merging.
+FToast
+
+Dialog Sight Merging
+Encapsulation of universal Dialog supporting sight merging.
+FDialog
+
+updateView Method
+Updates components in both left and right layouts simultaneously to avoid duplicate code.
+BindingPair.updateView
+
+setLeft Method
+Operates only on the left layout, suitable for event binding or external data modification.
+BindingPair.setLeft
+Focus Management
+Focus Tracking Basic Implementation
+
+Maintains focus switching logic, supporting gestures (swipe forward/backward) and event responses (single-tap/double-tap).
+FocusHolder, FixPosFocusTracker
+
+RecyclerView Focus Management
+Supports focus switching in list scenarios, with two modes: fixed focus position and moving focus position.
+RecyclerViewSlidingTracker, RecyclerViewFocusTracker
+
+Custom View Focus Interface
+Enables custom views to implement focus switching logic.
+IFocusable interface
+Touch Events & Responses
+
+Gesture Recognition & Distribution
+Converts raw MotionEvent into gestures such as single-tap, long-press, and swipe, and exposes them through event streams.
+TouchDispatcher, CommonTouchCallback
+
+Event Stream Encapsulation
+Maps gestures to TempleAction subclasses, supporting Kotlin Flow responses.
+BaseEventActivity, TempleAction
+
+Rayneo X3 New Gestures
+Supports gestures like swipe up/down and two-finger tap, optimizing swipe direction recognition.
+CommonTouchCallback interface
+
+Swipe Direction Mapping
+Supports touchpad swipe mapping in natural and non-natural modes, switchable in system settings.
+TempleAction.SlideForward/Backward
+Smooth Scrolling
+Fixed Focus Position List Follow-Up
+Modifies raw event coordinates to achieve list scrolling follow-up effect.
+RecyclerViewSlidingTracker
+
+Moving Focus Position List Follow-Up
+Triggers focus switching based on swipe distance, combined with list scrolling.
+RecyclerViewFocusTracker
+
+Fixed View Follow-Up Effect
+Follow-up swipe response for fixed-position views.
+FixPosFocusTracker
+3D Effect Implementation
+Binocular Parallax Pseudo 3D
+Creates parallax through left-right view offset to form a 3D effect.
+make3DEffect, make3DEffectForSide
+Audio Capture Modes
+X2 Sound Collection Mode
+Supports modes like recording, camera sound collection, translation, and voice assistant, requiring parameter settings via AudioManager.
+AudioManager.setParameters
+
+X3 Sound Collection Mode
+New specific sound collection modes (not detailed in documentation, refer to specific implementations).
+-
+Camera Development
+Camera Function Call
+Based on Android camera2 API, supporting resolution enumeration and preview.
+CameraManager, Camera2 API
+Mobile Connection & GPS Streaming
+Mobile Connection Status Monitoring
+Obtains real-time Bluetooth connection status of the mobile phone.
+MobileState.isMobileConnected()
+
+GPS Data Streaming
+Integrates IPC SDK to obtain mobile phone GPS data, requiring asynchronous callback handling.
+IPC SDK, OnResponseListener

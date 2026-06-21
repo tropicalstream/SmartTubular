@@ -1,0 +1,47 @@
+Specification/Model
+RayNeo X3 Pro
+Chip Platform
+
+Qualcomm Snapdragon AR1 Gen1
+Storage Configuration
+4GB RAM + 32GB ROM
+Display Solution
+0.36cc full-color MicroLED optical engine + diffractive waveguide
+Refresh Rate
+Up to 60Hz
+Resolution
+640×480
+FOV (Field of View)
+30°
+PPD (Pixels Per Degree)
+27
+Brightness
+Peak 6000nits, Average 3500nits
+Camera
+12MP main camera (RGB) + spatial camera (VGA)
+Sensors
+- IMU sensors: gyroscope, accelerometer, magnetometer <br> - Removal sensor: one on left temple
+Speakers
+2 built-in stereo speakers, support reverse noise cancellation, stereo output
+Microphones
+3 microphones (one on each temple, one in front)
+Interaction Methods
+Temple touch, voice, watch/phone interaction
+Weight
+76g
+Dimensions
+L153.16mm × W45.65mm × H168.6mm
+Connectivity
+
+- Wi-Fi 6: supports 2.4G&5G dual-band, 802.11 a/b/g/n/ac <br>
+- Bluetooth 5.2
+USB
+USB 2.0, Type C interface
+Battery/Lifespan
+245mAh, 3-5 hours moderate use
+Charging
+5V voltage, max charging current 735mA
+Myopia Solution
+- Snap-on lenses <br> - Full-fit lenses
+Operating System
+RayNeo AI OS 2.0

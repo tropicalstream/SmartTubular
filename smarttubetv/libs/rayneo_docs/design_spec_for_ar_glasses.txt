@@ -1,0 +1,189 @@
+[Image]
+Applicable Devices: RayNeo X2 / X3 Pro and Similar Optical Waveguide/MicroLED Integrated Glasses
+Applicable Scenarios: Assisted Reality, AI Assistant, Instant Information Display
+
+1. Core Design Principles (Core Principles)
+The core of AI/AR glasses design lies in  "Augment without Distraction" .
+- Real World First : UI is an "annotation" of the real world rather than a "mask".  Black (#000000) is transparent , and the transparent area must be maximized to ensure users' safety perception of the environment.
+- Heads-up & Glanceable : Information should be presented within the natural line of sight, and interactions must support blind operation. Avoid users having to look down or focus on reading for an extended period.
+- Minimalism: Limited by FOV (Field of View) and computing power, all decorative elements are removed. Only the core text and icons are retained, pursuing extremely low information density.
+- Audio-Visual Synergy: Visuals only carry key "road sign" information, while detailed descriptions and secondary feedback are delegated to voice/audio interaction.
+
+2. Hardware & Display Constraints
+Attribute
+Specifications (X2 / X3 Pro)
+Design Constraints and AI Checkpoints
+Canvas Resolution
+640 x 480 px
+All design drafts shall use this as the reference size.
+FOV
+25° (X2)
+30° (X3 Pro)
+The field of view is extremely narrow, covering only the central area. The content display of X3 Pro will be visually magnified 1.2 times compared to X2, and adaptation checks are required.
+PPD
+-
+Using 1px thin lines is prohibited. Lines must be ≥ 2px; otherwise, breaks or jagged edges will appear on the Optical Waveguide lens.
+Imaging Distance
+Virtual image distance ~2m - 5m
+Core information is placed in the 1.7m - 5m comfort zone to avoid visual fatigue and vergence-accommodation conflict.
+Safety Margin
+Around the screen
+Reserve at least 16px - 30px of black safety margins around the screen to avoid incomplete display caused by edge distortion or binocular parallax.
+
+3. Layout & Zoning
+3.1 Degree of Freedom Mode (DoF Mode)
+0 DOF (Recommended)
+- Description
+AR glasses do not track any movement of the user's head; virtual information is fixedly displayed in front of the wearer's eyes and moves with the wearer's movement.
+- Applicable Scenarios
+Currently, all system-level applications of the X Series glasses adopt the 0 DoF mode.
+- Interaction Limitation
+Users cannot change their perspective by turning their heads or moving, and virtual information always remains in a fixed position.
+- Suitable for Interaction
+Touchpad or button interaction, voice interaction.
+[Image]
+
+3 DOF (used in combination with scenarios)
+- Description
+AR glasses track the rotation of the user's head along the x, y, and z axes, but do not track positional translation.
+- Applicable Scenarios
+360° panoramic video or panoramic image browsing.
+- Interaction Restrictions
+Users can only move their perspective by "turning their heads" and cannot "walk into" virtual content. A "self-righting mechanism" is required.
+- Suitable for interaction
+Touchpad or button interaction, voice interaction, and gesture interaction with fixed depth.
+[Image]
+
+6 DOF (Exploration Scene)
+- Description
+AR glasses can simultaneously track the rotation and positional translation of the user's head along the x-axis, y-axis, and z-axis, allowing the user to move freely within three-dimensional space.
+- Applicable Scenarios
+Virtual object placement and real-time interaction, such as furniture preview, industrial assembly, and virtual navigation.
+- Interaction Limitations
+Requires support from cameras and SLAM algorithms to avoid coordinate drift; when virtual objects interact with the real environment, issues such as occlusion, lighting, and spatial position relationships need to be considered.
+- Suitable for interaction
+Gesture interaction with spatial depth, 6 DoF controllers, eye tracking interaction, etc.
+PS: High power consumption, it is recommended to use only for short-term exploration scenarios
+[Image]
+
+3.2 Functional Zoning (Zoning)
+- Top (Top): Temporary Notification Area (Toast), displays status messages such as "Connected" and "Saved successfully", and automatically disappears after 2-3 seconds.
+- Center: Core interaction area, displays AI responses, incoming call cards, and core operation objects.
+- Bottom (Bottom): Navigation and Guidance Area, displays Bottom Bar (3-4 icons) or operation prompts (e.g., "Double-click to exit").
+- Left (Left): Media feedback area, corresponding to the physical interaction of the left temple (volume/brightness adjustment feedback).
+[Image]
+
+4. Visual Design System (VDS)
+4.1 Color Strategy
+- Background Color :  Force Pure Black (#000000) . Black Non-Luminous = Transparent.  Prohibited  to Use White or Bright Full-Screen Background (Causes Blindness + High Power Consumption).
+- Theme Color : High-saturation, high-brightness cool tones must be used to ensure visibility under strong outdoor light.
+  - ✅ Recommended: Cyan (#4DE2FF), Fluorescent Green (#44FF66), Purple (#8566FF).
+  - ⚠️ Use with caution: Red (only used for deletion/extremely high-risk warnings, prone to causing fatigue).
+  - ❌ Disabled: Gradient colors (prone to color banding; if necessary, prioritize the blue channel), dark gray (invisible outdoors).
+4.2 Typography Specification (Typography)
+- Minimum font size: 16px, less than 16px is unreadable on AR devices.
+- Font Weight: Recommended Bold or Medium. Regular/Light fonts are prone to being confused with environmental textures in a perspective background.
+- Level:
+  - Title : 28px - 40px (Bold)
+  - 正文: 20px - 24px (Regular/Medium)
+  - Auxiliary : 16px - 18px
+- Layout: Suggest 1.2 line spacing. Text should be streamlined into short sentences or keyword lists, avoiding long paragraphs.
+4.3 3D and Graphics
+- 3D creatives
+  - Only applicable to Low Poly, with the number of faces per model < 5000.
+  - It is recommended to use solid colors for materials, and exercise caution when using warm colors over large areas.
+  - The model uses PBR materials first, with the recommended maximum size of PBR textures being 512x512px. Limiting the size helps reduce caching.
+  - It is not recommended to use particle effects and physical systems, as a large amount of computation will increase CPU power consumption, leading to overheating and frame drops, resulting in a laggy screen.
+  - Skybox/HDR Environment: There is no need to render the environment texture. If you add a sky environment, please set the camera background to black to ensure that the Skybox is not rendered.
+- Icons: Prioritize using linear icons (Outline) or high-contrast flat icons, and avoid complex details.
+
+5. Interaction Design Specification (Interaction Design)
+5.1 Temple Touch - Core Interaction
+It should support blind operation and provide tactile/auditory feedback.
+Action
+Function Definition
+Remarks
+Tap
+Select / Confirm / Play Pause
+Basic confirmation operation.
+Double Tap
+Return / Exit / Switch Song
+A globally unified exit/return mechanism.
+Swipe Back and Forth (Swipe)
+Switch Focus / Adjust Volume
+
+It is recommended to support "Direct Manipulation" to improve efficiency.
+Scroll up and down
+List pagination / Adjust parameters
+For the features of X3 Pro, X2 needs to be adapted to slide back and forth or other methods.
+Long Press
+Wake up AI / Call out Control Center
+System-level trigger operation, not available to developers
+Shortcut Key
+One-touch Start / Recording
+X3 Pro system button, located above the right temple, is not available to developers
+5.2 Voice & MultiModal Machine Learning (Voice & AI)
+- First Priority: Input the preferred voice.
+- Feedback: AI responses follow the principle of "short sentences + waveform animation effects". Avoid displaying large blocks of text on the screen, and present detailed content through TTS playback.
+5.3 Extended Interaction (Accessories)
+- Smart Ring (X2): Ray-casting, suitable for precise point selection in complex interfaces.
+- Watch (X3 Pro): Apple Watch gesture interaction (pinch to confirm, twist wrist to select), suitable for minimalist operation.
+
+6. How to Design a Good Application
+Taking a translation app as an example
+6.1 Navigation Design
+If the application contains multiple sub - functions, one of the sub - functions can be selected by default, and users can be guided to switch by sliding through the navigation bar at the bottom of the interface.
+[Image]
+
+It is recommended that the navigation bar support follow - hand sliding to improve interaction efficiency.
+Follow Hand Sliding:
+When sliding on the touchpad, the focus will follow the fingertip in real time, and continuous sliding can continuously switch the focus.
+
+[Image]
+
+After selecting a sub - function, the navigation bar can automatically disappear, thus leaving users with a wider field of view.
+
+[Image]
+
+6.2 Interaction Design
+If the application contains multiple sub - functions, you can consider swiping the touchpad back and forth to switch between sub - functions to achieve quick switching, reduce interaction levels, and shorten operation steps.
+[Image]
+
+For list-style and grid-style layouts, both bidirectional (front-back) and four-way (up-down, front-back) interactions should be simultaneously compatible.
+[Image]
+[Image]
+
+If an abnormality occurs in the network, Bluetooth, server, etc., affecting the normal use of the application, users should be promptly informed; persistent impacts may consider a permanent prompt.
+[Image]
+[Image]
+
+6.3 Display Design
+For text reading applications, multiple font sizes can be provided for users to choose from to enhance the personalized experience.
+[Image]
+[Image]
+
+If users need to interact with the real environment while viewing virtual images, consideration should be given to whether to reserve a field of view for the user, i.e., whether the virtual content fills the entire screen or is only presented within a limited area.
+[Image]
+[Image]
+7. Performance & Power Red Line (Performance & Power)
+Due to the high integration of the glasses, the overall heat dissipation capacity is relatively weak. Therefore, it is necessary to control power consumption to prevent laggy and frequency reduction issues caused by excessive heating.
+- Impact of UI layer design on power consumption
+  - Minimize highlight animations or continuous dynamic content
+  - Use transparent backgrounds reasonably to avoid overloading the GPU
+  - Optimize layer composition and resource formats (SVG is superior to PNG/GIF)
+  - In terms of color combination, use the green channel more and the red channel less (red light has the highest power consumption)
+- APL (Average Picture Level):
+  - Continuously display interface APL < 13%.
+  - Instantaneous Peak APL < 25%.
+  - Principle: The darker the screen, the more power is saved, and the fewer pixels are lit, the better.
+- Refresh Rate: UI is recommended to be controlled at 30fps, and non-game applications do not require 60fps.
+- Logical Threads: Keep them within 4 to prevent CPU overheating and frequency reduction.
+
+8. Acceptance Inspection Checklist
+Before delivering design drafts or code, the following checks must be passed:
+1. [ ] Is the background pure black (#000000)? (Ensure transparency)
+2. [ ] Is the minimum font size > 16px? (Ensure readability)
+3. [ ] Is the line width ≥ 2px? (Prevent breakage/aliasing)
+4. [ ] Is APL < 13%? (Is there a large area of luminous region?)
+5. [ ] Does the walking scene block the  of the center of the field of view? (Ensure walking safety)
+6. [ ] Is voice/touch operation guidance provided? (to prevent users from not knowing how to interact)

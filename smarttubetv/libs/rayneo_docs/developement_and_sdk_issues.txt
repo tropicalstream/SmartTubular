@@ -1,0 +1,177 @@
+General problem
+1. How to download SDK?
+Developers can download it directly in the RayNeo Open Platform , the specific path is as follows:
+[Image]
+
+2. How to enable developer mode (adb installation permission)
+X2 does not need to enable developer mode, but ADB installation apk needs to enable permissions , the specific command is as follows:
+adb shell settings put global mercury_install_allowed 1
+Please ensure that the connection between the device and the computer is stable during operation.
+If you encounter frequent disconnections during the connection process, the possible reasons and solutions are as follows:
+- The power supply capacity of the USB port is too strong, it is recommended to try replacing it.
+- There are other processes occupying or interfering with the ADB connection, causing it to be unstable. Check and close processes that may affect ADB.
+
+3. How to grant application glasses permissions?
+Manually grant application glasses permissions through the ADB command line tool.
+Install the "x2enwords-0515-app-debug" application package in the "C:\ Users\ Downloads" directory with the following command:
+   adb install C:\Users\Downloads\x2enwords-0515-app-debug.apk
+To enable camera permissions for the application named "com.fantastytech.x2enwords", the command is as follows:
+adb shell pm grant com.fantastytech.x2enwords android.permission.CAMERA
+To enable write permission to the SD card for the application named "com.fantastytech.x2enwords", the command is as follows:
+adb shell pm grant com.fantastytech.x2enwords android.permission.WRITE_EXTERNAL_STORAGE
+
+4. How to set the background of the main activity of the program?
+The background should be set to black to achieve a transparent effect on the glasses, referring to the design specifications
+
+5. What should I do if the camera fov is inconsistent with the field of view fov?
+[Problem Description] As shown in the figure below, the content seen through the glasses screen in the yellow frame; the content shot by the camera and drawn on the app in the pink frame. Due to the inconsistency of the fov between the two, there may be differences in the content obtained by the viewfinder, which may affect functions such as photo recognition.
+[Image]
+[Processing method]
+In Unity, adjust the horizontal fov parameter of the camera to 20.11, as shown in the figure.
+[Image]
+In Android, it can be achieved by transforming the coordinates.
+
+6. What formats does X2 3D rendering support?
+X2 supports 3D rendering formats including OBJ and FBX. It is recommended to use FBX format.
+
+7. Can ARkit and ARcore be supported?
+Currently, application development based on arkit and arcore is not supported, but software applications such as vuforia and mediapipe can be accessed for development.
+
+8. Why do I still need to connect to the internet and ring every time I open it?
+[Background] If the sdk is not connected for configuration, the system default apk is the mobile phone apk. To adapt its interaction (touch screen interaction), it will force the connection to the ring
+[Solution] Access the sdk and refer to the sdk document to configure the AndroidManifest.xml file, Location: Quick Start - > Configuration Settings - > Other Configuration
+[Image]
+
+9. Can the Interaction Design of the trackpad be modified through the SDK?
+For example, changing operations like swiping left to functions like taking photos?
+Users can modify some operations of the right trackpad in their own applications, but cannot synchronously modify the system-level Interaction Design.
+In addition, the long press operation has been fixed to return to the dock bar function, so it cannot be modified.
+Specific reference AR glasses design specifications
+
+10. Does the physical button support customization?
+There is only one physical power button on the X2 glasses, equipped with two touchpads. Developers can define part of the operation of the right temple touchpad and part of the operation of the ring. Please refer to the design specifications and SDK documents for details. For ring operation, please refer to IPCSDK for Android.
+
+11. Does the interface support transparency adjustment?
+The X2 glasses adopt the OST scheme, and the black part in the UI interface is displayed transparently. Please refer to the design specifications for details.
+
+12. How to get camera footage?
+- If you do not use the 6dof function, you can directly obtain it through the native interface.
+  - Android platform can directly use the API of Android Camera2.
+  - The Unity platform can directly use WebCamTexture to obtain camera data.
+- If using the 6dof function, it can be obtained through ShareCamera API.
+
+13. Is gesture interaction integrated?
+At present, there is no gesture interaction capability, and the corresponding function has high power consumption. It is recommended not to consider it for the time being.
+
+14. Is there a dedicated voice input method?
+There is currently no system-level voice input method available, and third-party ASR services need to be connected.
+
+15. How to deal with overheating when running on glasses?
+The following are several issues to pay attention to during the application development process to avoid overheating of the main board, system shutdown, and display exceptions.
+Two main problems cause glasses to overheat
+- Try to reduce the proportion of displayed content, especially white content that consumes more power
+- The total current exceeding 500mA will cause heating
+Few suggestions
+1. Use monitoring tools to measure the total current of the glasses (refer to Debugging Tools - > Equipment Monitoring).
+2. Estimate APL (screen-to-body ratio) before running on glasses.
+3. Reducing the system brightness to around 20 may be more effective
+4. Turn off the automatic brightness control (ALS) in the system.
+
+16. Whether to support multi-opening/background running
+It does not support multi-opening and background running for the time being. If you start other applications, the previous application will be forcibly killed.
+
+17. How to save pictures to an album and synchronize them on your phone?
+[Background] To synchronize the current mobile album, you need to save the pictures to a specified directory and provide corresponding thumbnails.
+1. Save the images to be saved to/sdcard/DCIM/camera
+2. Save two reduced preview images in/sdcard/DCIM/.thumbnail, named 200px and 720px respectively, as shown in the figure
+private final Size mThumbnailSize = new Size(960, 720);
+private final Size mMiniThumbnailSize = new Size(200, 200);
+[Image]
+
+18. Do you provide UE5 sdk?
+Currently, there is no ue5 SDK. The official only supports Unity and Android SDKs. You can evaluate whether these two SDKs can be accessed technically
+
+19. How to obtain more accurate GPS data
+You can refer to IPCSDK for Android, which supports synchronous transmission of glasses + mobile phone GPS to improve data accuracy
+
+20. Can I customize the launcher application?
+Temporarily not supported.
+But if the application is launched, you can apply for configuration to enable the voice assistant to directly launch your application.
+
+21. Whether to support offline ASR, TTS
+The current glasses do not provide end-side ASR and TTS capabilities, and developers need to connect with third-party capabilities to achieve them
+
+22. How to catch logs
+[Adb method] adb logcat > outlog.txt
+[Beginner's way]
+1. After connecting the glasses, in the mobile app, enter My - > Version Information, long press the icon to log start, and then reproduce the problem
+2. Connect the glasses to the computer, check the storage of the glasses, and provide the log file that appears.
+[Image]
+
+23. Whether to provide different microphone recording modes
+The current internal interface can provide different radio modes. If necessary, please contact "RayNeo Assistant".
+It is expected to be provided to the outside world through SDK in late Q3 2024.
+
+Unity related
+1. How does Unity use Mediapipe to implement gesture recognition capability?
+Gesture recognition requires exclusive camera, and the slam-6dof function cannot be enabled during use, and the power consumption may be too high, so it is not recommended to use it for the time being
+- Use the Android SDK to obtain all the point information of the finger and transfer it to Unity for processing through enumeration.
+- Due to the large amount of coordinate data transmitted, it is necessary to minimize the number of calls to control power consumption.
+
+2. Does X2 glasses support AR foundation function?
+AR foundation is not supported yet.
+
+3. How to implement 6dof and 3dof in X2?
+This function is directly provided in the SDK document and can be debugged with samples
+
+4. How to call 3dof of 9 axes
+You can use it in the following ways:
+FfalconApi.GetAzimuth()
+Api.FXRUnity_NineAxisOrientation
+PS: Regarding the calibration of magnetometers, you can first open the map app to trigger the calibration, and then the ability will be externalized to the global call
+
+Android related
+1. Explanation of the issue regarding the inability to access the Android SDK Maven server.
+This issue only occurs in the Android SDK because the Maven server is a private server that needs to be accessed through the intranet.
+Developers can directly use the AAR file (provided in the sdk file).
+
+2. Whether to support multi-opening/background running
+It does not support multi-opening and background running for the time being. If you start other applications, the previous application will be forcibly killed.
+
+3. How to control the depth of field of the screen on Android
+There is a make3DEffect function, which can be called to adjust the pixel offset of the left and right screens, thereby simulating the depth of field of binocular parallax
+
+4. How to achieve video mirroring on Android
+Currently, the SDK only supports UI interface display and does not support video mirroring display. You can refer to the following processing:
+BaseMirroActivity can only perform mirroring on regular UI controls. For types like SurfaceView, additional processing is required to achieve mirroring. Please refer to the screenshot and source code below (the source code is not directly publicly available).
+[Image]
+[Image]
+[Image]
+PS: It is recommended to use Unity development for this video scene
+
+5. How does webview achieve binocular convergence?
+Refer to the following method, but the page scrolling still needs some optimization.
+This content is only supported in a Feishu Docs
+[Image]
+[Image]
+[Image]
+
+other
+1. How to Publish Third-Party Apps to the RayNeo App Market
+1. Developers shall complete self-testing of functions. A more stable and smooth user experience is key to winning over users.
+2. Submit materials and APK via the Open Platform
+- Complete registration and authentication on the Open Platform: open.rayneo.com
+- Enter the Console → Android Application Management
+- Submit app-related materials and APK (this will be completed in two upload steps)
+3. Notify us via email (Developer@rayneo.com), so that we can respond to your needs promptly and facilitate subsequent coordination.
+4. Prior to app store release, we need to conduct the following steps:
+- Function experience evaluation to ensure functional completeness and usability
+- Submit the app to the testing department for release approval testing
+- Feed back test results to developers; multiple rounds of communication may be required if modifications are needed
+- Finalize compliance with release standards, which mainly include:
+  - Whether the UI and interaction comply with AR glasses specifications
+  - Functional stability and completeness
+  - Power consumption performance, e.g., whether the device generates excessive heat
+5. Confirm app release details
+- Confirm release assets, including app name, description, user guide, promotional screenshots, and user feedback channels (to facilitate direct communication with developers)
+- Confirm the release date

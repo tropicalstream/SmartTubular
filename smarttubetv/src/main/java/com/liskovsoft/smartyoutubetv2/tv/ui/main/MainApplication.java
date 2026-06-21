@@ -1,0 +1,184 @@
+package com.liskovsoft.smartyoutubetv2.tv.ui.main;
+
+import androidx.multidex.MultiDexApplication;
+
+import com.liskovsoft.sharedutils.helpers.Helpers;
+import com.liskovsoft.smartyoutubetv2.common.app.models.data.BrowseSection;
+import com.liskovsoft.smartyoutubetv2.common.app.presenters.BrowsePresenter;
+import com.liskovsoft.smartyoutubetv2.common.app.views.AddDeviceView;
+import com.liskovsoft.smartyoutubetv2.common.app.views.AppDialogView;
+import com.liskovsoft.smartyoutubetv2.common.app.views.BrowseView;
+import com.liskovsoft.smartyoutubetv2.common.app.views.ChannelUploadsView;
+import com.liskovsoft.smartyoutubetv2.common.app.views.ChannelView;
+import com.liskovsoft.smartyoutubetv2.common.app.views.PlaybackView;
+import com.liskovsoft.smartyoutubetv2.common.app.views.SearchView;
+import com.liskovsoft.smartyoutubetv2.common.app.views.SignInView;
+import com.liskovsoft.smartyoutubetv2.common.app.views.SplashView;
+import com.liskovsoft.smartyoutubetv2.common.app.views.ViewManager;
+import com.liskovsoft.smartyoutubetv2.common.app.views.WebBrowserView;
+import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerData;
+import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerTweaksData;
+import com.liskovsoft.smartyoutubetv2.tv.ui.adddevice.AddDeviceActivity;
+import com.liskovsoft.smartyoutubetv2.tv.ui.browse.BrowseActivity;
+import com.liskovsoft.smartyoutubetv2.tv.ui.channel.ChannelActivity;
+import com.liskovsoft.smartyoutubetv2.tv.ui.channeluploads.ChannelUploadsActivity;
+import com.liskovsoft.smartyoutubetv2.tv.ui.dialogs.AppDialogActivity;
+import com.liskovsoft.smartyoutubetv2.tv.ui.playback.PlaybackActivity;
+import com.liskovsoft.smartyoutubetv2.tv.ui.search.tags.SearchTagsActivity;
+import com.liskovsoft.smartyoutubetv2.tv.ui.signin.SignInActivity;
+import com.liskovsoft.smartyoutubetv2.tv.ui.webbrowser.WebBrowserActivity;
+
+import java.lang.Thread.UncaughtExceptionHandler;
+
+public class MainApplication extends MultiDexApplication { // fix: Didn't find class "com.google.firebase.provider.FirebaseInitProvider"
+    static {
+        // fix youtube bandwidth throttling (best - false)???
+        // false is better for streams (less buffering)
+        System.setProperty("http.keepAlive", "false");
+        // fix ipv6 infinite video buffering???
+        // Better to remove this fix at all. Users complain about infinite loading.
+        //System.setProperty("java.net.preferIPv6Addresses", "true");
+        // Another IPv6 fix (no effect)
+        // https://stackoverflow.com/questions/1920623/sometimes-httpurlconnection-getinputstream-executes-too-slowly
+        //System.setProperty("java.net.preferIPv4Stack" , "true");
+    }
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+
+        // Android 4 SponsorBlock fix???
+        // https://android-review.googlesource.com/c/platform/external/conscrypt/+/89408/
+        //if (Build.VERSION.SDK_INT == 19) {
+        //    Security.insertProviderAt(Conscrypt.newProvider(), 1);
+        //}
+
+        setupGlobalExceptionHandler();
+        setupViewManager();
+        initRayNeoSDK();
+        registerRayNeoLifecycleCallbacks();
+    }
+
+    private void registerRayNeoLifecycleCallbacks() {
+        if (!com.liskovsoft.smartyoutubetv2.common.utils.RayNeoDeviceUtil.isRayNeoDevice()) {
+            return;
+        }
+
+        registerActivityLifecycleCallbacks(new ActivityLifecycleCallbacks() {
+            private final java.util.Map<android.app.Activity, com.liskovsoft.smartyoutubetv2.tv.util.RayNeoHardwareManager> mManagers = new java.util.HashMap<>();
+
+            @Override
+            public void onActivityCreated(android.app.Activity activity, android.os.Bundle savedInstanceState) {
+                if (activity instanceof com.liskovsoft.smartyoutubetv2.common.misc.MotherActivity) {
+                    com.liskovsoft.smartyoutubetv2.tv.util.RayNeoHardwareManager manager = new com.liskovsoft.smartyoutubetv2.tv.util.RayNeoHardwareManager(activity);
+                    manager.onCreate(savedInstanceState);
+                    mManagers.put(activity, manager);
+                }
+            }
+
+            @Override
+            public void onActivityStarted(android.app.Activity activity) {
+                com.liskovsoft.smartyoutubetv2.tv.util.RayNeoHardwareManager manager = mManagers.get(activity);
+                if (manager != null) {
+                    manager.onPostCreate(null);
+                }
+            }
+
+            @Override
+            public void onActivityResumed(android.app.Activity activity) {}
+
+            @Override
+            public void onActivityPaused(android.app.Activity activity) {}
+
+            @Override
+            public void onActivityStopped(android.app.Activity activity) {}
+
+            @Override
+            public void onActivitySaveInstanceState(android.app.Activity activity, android.os.Bundle outState) {}
+
+            @Override
+            public void onActivityDestroyed(android.app.Activity activity) {
+                com.liskovsoft.smartyoutubetv2.tv.util.RayNeoHardwareManager manager = mManagers.remove(activity);
+                if (manager != null) {
+                    manager.onDestroy();
+                }
+            }
+        });
+    }
+
+    private void initRayNeoSDK() {
+        android.util.Log.d("RayNeo", "initRayNeoSDK called");
+        try {
+            com.ffalcon.mercury.android.sdk.MercurySDK.INSTANCE.init(this);
+            android.util.Log.d("RayNeo", "initRayNeoSDK success");
+        } catch (Throwable e) {
+            android.util.Log.e("RayNeo", "initRayNeoSDK failed: " + e.getMessage(), e);
+        }
+    }
+
+    private void setupViewManager() {
+        ViewManager viewManager = ViewManager.instance(this);
+
+        viewManager.setRoot(BrowseActivity.class);
+        viewManager.register(SplashView.class, SplashActivity.class); // no parent, because it's root activity
+        viewManager.register(BrowseView.class, BrowseActivity.class); // no parent, because it's root activity
+        viewManager.register(PlaybackView.class, PlaybackActivity.class, BrowseActivity.class);
+        viewManager.register(AppDialogView.class, AppDialogActivity.class, BrowseActivity.class);
+        viewManager.register(SearchView.class, SearchTagsActivity.class, BrowseActivity.class);
+        viewManager.register(SignInView.class, SignInActivity.class, BrowseActivity.class);
+        viewManager.register(AddDeviceView.class, AddDeviceActivity.class, BrowseActivity.class);
+        viewManager.register(ChannelView.class, ChannelActivity.class, BrowseActivity.class);
+        viewManager.register(ChannelUploadsView.class, ChannelUploadsActivity.class, BrowseActivity.class);
+        viewManager.register(WebBrowserView.class, WebBrowserActivity.class, BrowseActivity.class);
+    }
+
+    private void setupGlobalExceptionHandler() {
+        UncaughtExceptionHandler defaultHandler = Thread.getDefaultUncaughtExceptionHandler();
+
+        if (defaultHandler == null) {
+            return;
+        }
+
+        Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
+            applyCrashFixes(e);
+            //e = wrapWithAdditionalInfo(e);
+
+            defaultHandler.uncaughtException(t, e);
+        });
+    }
+
+    private Throwable wrapWithAdditionalInfo(Throwable e) {
+        if (Helpers.equalsAny(e.getMessage(),
+                "parameter must be a descendant of this view",
+                "Attempt to invoke virtual method 'android.view.ViewGroup$LayoutParams android.view.View.getLayoutParams()' on a null object reference")) {
+            Class<?> view = ViewManager.instance(getApplicationContext()).getTopView();
+            BrowseSection section = null;
+
+            if (view == BrowseView.class) {
+                section = BrowsePresenter.instance(getApplicationContext()).getCurrentSection();
+            }
+
+            e = new RuntimeException("A crash in the view " + view.getSimpleName() + ", section id " + (section != null ? section.getId() : "-1"), e);
+        }
+        return e;
+    }
+
+    private void applyCrashFixes(Throwable e) {
+        if (e instanceof OutOfMemoryError || e.getCause() instanceof OutOfMemoryError) {
+            Class<?> view = ViewManager.instance(getApplicationContext()).getTopView();
+            if (view == PlaybackView.class) {
+                PlayerTweaksData tweaksData = PlayerTweaksData.instance(getApplicationContext());
+                PlayerData playerData = PlayerData.instance(getApplicationContext());
+                int playerDataSource = tweaksData.getPlayerDataSource();
+                int videoBufferType = playerData.getVideoBufferType();
+                if (playerDataSource == PlayerTweaksData.PLAYER_DATA_SOURCE_OKHTTP) {
+                    tweaksData.setPlayerDataSource(PlayerTweaksData.PLAYER_DATA_SOURCE_DEFAULT);
+                    tweaksData.persistNow();
+                } else if (videoBufferType == PlayerData.BUFFER_HIGH || videoBufferType == PlayerData.BUFFER_HIGHEST) {
+                    playerData.setVideoBufferType(PlayerData.BUFFER_MEDIUM);
+                    playerData.persistNow();
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,48 @@
+ Turn on ViewBinding
+The SDK is built around ViewBinding, so enable it in build.gradle:
+android {
+    buildFeatures {
+        viewBinding true
+    }
+}
+ 
+Add the required <meta‑data>
+Add the above meta-data tag within the application tag of the AndroidManifest file of the main module. When its value is set to true, it can be recognized by the system, allowing your application to be launched from the default startup entry. If the above tag is not added, the icon of your application will not be displayed in the launcher of the glasses.
+<application
+    android:name=".MyApplication"
+    … >
+    <!-- Allow the system to recognize and launch your app from the default entry point -->
+    <meta-data
+        android:name="com.rayneo.mercury.app"
+        android:value="true" />
+</application>
+ 
+3.3 Pull in the SDK and dependencies
+AAR approach
+1.  Drop the SDK .aar into app/libs.
+[Image]
+
+2. Add the dependencies in build.gradle:
+Note : The SDK itself is written in Kotlin and uses a number of Kotlin‑specific features, hence the extra Kotlin artifacts.
+// Local AAR
+implementation fileTree(dir: "libs", include: ["*.aar"])
+// Core AndroidX + Kotlin
+implementation "androidx.core:core-ktx:1.8.0"
+implementation "androidx.appcompat:appcompat:1.3.0"
+implementation "androidx.fragment:fragment-ktx:1.5.3"
+implementation "androidx.activity:activity-ktx:1.3.0-alpha08"
+implementation "androidx.recyclerview:recyclerview:1.1.0"
+implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.6.1"
+implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.1"
+ 
+3.4 Initialize the SDK
+Call the MercurySDK.init() method in your Application for initialization.
+e.g. For MercuryDemoApplication, the initialization code is as follows:
+class MercuryDemoApplication : Application() {
+    override fun onCreate() {
+        super.onCreate()
+        MercurySDK.init(this)
+    }
+}
+
+You have completed the integration of RayNeo ARSDK for Android.
