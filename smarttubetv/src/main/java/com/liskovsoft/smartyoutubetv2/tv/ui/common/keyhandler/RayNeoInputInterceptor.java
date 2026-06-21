@@ -71,6 +71,8 @@ public class RayNeoInputInterceptor {
     private long mSuppressClickUntilMs;
     private long mLastSwipeKeyTimeMs;
     private int mPendingSwipeKeyCode;
+    private float mSwipeStartX;
+    private float mSwipeStartY;
     private int mHalfWidth = 0; // per-eye width (X3 Pro mirrors the left 640px)
     // Lower gain = steadier, slower pointer (user preference). Smoothing eases
     // the displayed cursor toward its target each animation frame so it never
@@ -169,6 +171,8 @@ public class RayNeoInputInterceptor {
                 mGestureMoveY = 0f;
                 mSuppressClickThisGesture = false;
                 mPendingSwipeKeyCode = 0;
+                mSwipeStartX = event.getX();
+                mSwipeStartY = event.getY();
                 // Snapshot where the pointer is aimed at the START of this
                 // gesture, so a tap clicks there even if the tap jitters it.
                 mClickX = mCursorX;
@@ -180,10 +184,17 @@ public class RayNeoInputInterceptor {
 
             if ((event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL)
                     && mPendingSwipeKeyCode != 0) {
-                final int keyCode = mPendingSwipeKeyCode;
+                // Re-derive the direction from the WHOLE gesture's net
+                // displacement (with a strong vertical bias) so an early or
+                // ambiguous SDK classification can't turn a vertical swipe into
+                // a left/right — which in a menu exits it.
+                float gestureDx = event.getX() - mSwipeStartX;
+                float gestureDy = event.getY() - mSwipeStartY;
+                final int keyCode = directionKeyFromDisplacement(gestureDx, gestureDy, mPendingSwipeKeyCode);
                 mPendingSwipeKeyCode = 0;
                 log("dispatch pending swipe after " + motionActionToString(event.getActionMasked())
-                        + " key=" + keyToString(keyCode));
+                        + " key=" + keyToString(keyCode)
+                        + " dx=" + gestureDx + " dy=" + gestureDy);
                 mUiHandler.postDelayed(() -> {
                     if (moveFocusForNavigationKey(keyCode)) {
                         // Focus moved directly (e.g. a vertical settings list).
@@ -889,6 +900,21 @@ public class RayNeoInputInterceptor {
             default:
                 return String.valueOf(keyCode);
         }
+    }
+
+    /** Choose the DPAD direction from a gesture's net displacement, biased
+     *  toward vertical so a mostly-vertical swipe is never read as left/right
+     *  (which exits menus). Only a clearly sideways swipe counts as horizontal. */
+    private static int directionKeyFromDisplacement(float dx, float dy, int fallback) {
+        float adx = Math.abs(dx);
+        float ady = Math.abs(dy);
+        if (adx < 1f && ady < 1f) {
+            return fallback; // no usable displacement — trust the SDK's guess
+        }
+        if (adx > ady * 1.6f) {
+            return dx < 0f ? KeyEvent.KEYCODE_DPAD_LEFT : KeyEvent.KEYCODE_DPAD_RIGHT;
+        }
+        return dy < 0f ? KeyEvent.KEYCODE_DPAD_UP : KeyEvent.KEYCODE_DPAD_DOWN;
     }
 
     private static boolean isDpadNavigationKey(int keyCode) {
