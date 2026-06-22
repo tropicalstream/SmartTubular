@@ -166,9 +166,36 @@ public class PlayerUIController extends BasePlayerController {
 
         FormatItem matchedFormat = null;
 
-        for (FormatItem item : getPlayerData().getLastSubtitleFormats()) {
-            if (getPlayer().getSubtitleFormats().contains(item)) {
-                matchedFormat = item;
+        // Prefer the user's recent language, and within it prefer INTEGRATED
+        // (human-made) captions over AUTO-GENERATED ones. Matching by base
+        // language (not exact format) also lets a video that only ships
+        // integrated captions resolve even when the last remembered track was
+        // auto-generated — otherwise nothing would show on tapping CC.
+        List<FormatItem> available = getPlayer().getSubtitleFormats();
+        for (FormatItem last : getPlayerData().getLastSubtitleFormats()) {
+            if (last == null || last.getLanguage() == null) {
+                continue;
+            }
+            String wantLang = SubtitleTrack.trimIfAuto(last.getLanguage());
+            FormatItem autoFallback = null;
+            for (FormatItem f : available) {
+                if (f == null || f.getLanguage() == null
+                        || wantLang == null
+                        || !wantLang.equalsIgnoreCase(SubtitleTrack.trimIfAuto(f.getLanguage()))) {
+                    continue;
+                }
+                if (!SubtitleTrack.isAuto(f.getLanguage())) {
+                    matchedFormat = f; // integrated -> best choice, stop looking
+                    break;
+                }
+                if (autoFallback == null) {
+                    autoFallback = f; // remember auto in case integrated is absent
+                }
+            }
+            if (matchedFormat == null) {
+                matchedFormat = autoFallback;
+            }
+            if (matchedFormat != null) {
                 break;
             }
         }
@@ -536,7 +563,7 @@ public class PlayerUIController extends BasePlayerController {
 
     private void onSearchClicked() {
         startTempBackgroundMode(SearchPresenter.class);
-        SearchPresenter.instance(getContext()).startSearch(null);
+        SearchPresenter.instance(getContext()).startVoice();
     }
     
     private void onVideoZoom() {

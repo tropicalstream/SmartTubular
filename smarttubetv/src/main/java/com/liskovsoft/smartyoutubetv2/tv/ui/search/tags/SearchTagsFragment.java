@@ -295,7 +295,7 @@ public class SearchTagsFragment extends SearchTagsFragmentBase {
             loadSearchResult("");
 
             if (enableRecognition && isRecognitionAvailable()) {
-                startRecognition();
+                startRayNeoVoiceSearch();
             } else {
                 focusOnSearchField();
             }
@@ -308,6 +308,10 @@ public class SearchTagsFragment extends SearchTagsFragmentBase {
     }
 
     private boolean isRecognitionAvailable() {
+        if (mSearchData != null && mSearchData.getSpeechRecognizerType() == SearchData.SPEECH_RECOGNIZER_GOTEV) {
+            return true;
+        }
+
         try {
             return SpeechRecognizer.isRecognitionAvailable(getContext());
         } catch (NullPointerException e) {

@@ -2,8 +2,17 @@ package com.liskovsoft.smartyoutubetv2.tv.ui.search.tags.vineyard;
 
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
+import android.content.ComponentName;
+import android.content.Context;
 import android.content.Intent;
+import android.media.AudioManager;
+import android.media.ToneGenerator;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.speech.RecognitionListener;
+import android.speech.RecognizerIntent;
+import android.speech.SpeechRecognizer;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -40,11 +49,14 @@ import net.gotev.speech.SpeechUtil;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 public abstract class SearchTagsFragmentBase extends SearchSupportFragment
         implements SearchSupportFragment.SearchResultProvider, SearchView {
     private static final String TAG = SearchTagsFragmentBase.class.getSimpleName();
+    private static final String RAYNEO_VOICE_TAG = "RayNeoVoiceSearch";
     private static final int REQUEST_SPEECH = 0x00000010;
+    private static final long RAYNEO_READY_TIMEOUT_MS = 4_000L;
 
     private TagAdapter mSearchTagsAdapter;
     //private ObjectAdapter mItemResultsAdapter;
@@ -55,6 +67,11 @@ public abstract class SearchTagsFragmentBase extends SearchSupportFragment
     private boolean mIsStopping;
     private SearchTagsProvider mSearchTagsProvider;
     private ProgressBarManager mProgressBarManager;
+    private final Handler mVoiceHandler = new Handler(Looper.getMainLooper());
+    private SpeechRecognizer mRayNeoSpeechRecognizer;
+    private boolean mRayNeoRecognizerReady;
+    private RayNeoSpeechIpcClient mRayNeoSpeechIpcClient;
+    private RayNeoAiRuntimeAsrClient mRayNeoAiRuntimeAsrClient;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -154,8 +171,12 @@ public abstract class SearchTagsFragmentBase extends SearchSupportFragment
 
         // NOTE: External recognizer makes voice search behave unexpectedly (broken by Google app updates).
         // You should avoid using it till there be a solution.
+        SearchData searchData = getSearchData();
+        searchData.setSpeechRecognizerType(SearchData.SPEECH_RECOGNIZER_GOTEV);
+        searchData.setInstantVoiceSearchEnabled(true);
+        searchData.setKeyboardAutoShowEnabled(false);
 
-        switch (getSearchData().getSpeechRecognizerType()) {
+        switch (searchData.getSpeechRecognizerType()) {
             case SearchData.SPEECH_RECOGNIZER_SYSTEM:
                 // Don't uncomment. Sometimes system recognizer works on lower api
                 // Do nothing unless we have old api.
@@ -183,6 +204,10 @@ public abstract class SearchTagsFragmentBase extends SearchSupportFragment
 
         try {
             Speech.getInstance().stopListening();
+            stopRayNeoSpeechIpc();
+            stopRayNeoAiRuntimeAsr();
+            stopRayNeoSpeechRecognizer();
+            setRayNeoMicMode(false);
         } catch (IllegalArgumentException | NoSuchMethodError e) { // Speech service not registered/Android 4 (no such method)
             e.printStackTrace();
         }
@@ -314,56 +339,211 @@ public abstract class SearchTagsFragmentBase extends SearchSupportFragment
     @SuppressWarnings("deprecation")
     private final SpeechRecognitionCallback mGotevCallback = () -> {
         if (isAdded()) {
-            try {
-                // you must have android.permission.RECORD_AUDIO granted at this point
-                PermissionHelpers.verifyMicPermissions(getContext());
-                Speech.getInstance().startListening(new SpeechDelegate() {
-                    @Override
-                    public void onStartOfSpeech() {
-                        Log.i(TAG, "speech recognition is now active");
-                        showListening();
-                    }
-
-                    @Override
-                    public void onSpeechRmsChanged(float value) {
-                        Log.d(TAG, "rms is now: " + value);
-                    }
-
-                    @Override
-                    public void onSpeechPartialResults(List<String> results) {
-                        StringBuilder str = new StringBuilder();
-                        for (String res : results) {
-                            str.append(res).append(" ");
-                        }
-
-                        String result = str.toString().trim();
-                        Log.i(TAG, "partial result: " + result);
-                        setSearchQuery(result, true);
-
-                        showNotListening();
-                    }
-
-                    @Override
-                    public void onSpeechResult(String result) {
-                        Log.i(TAG, "result: " + result);
-                        setSearchQuery(result, true);
-
-                        showNotListening();
-                    }
-                });
-            } catch (SpeechRecognitionNotAvailable | GoogleVoiceTypingDisabledException exc) {
-                Log.e(TAG, "Speech recognition is not available on this device!");
-                // You can prompt the user if he wants to install Google App to have
-                // speech recognition, and then you can simply call:
-                try {
-                    SpeechUtil.redirectUserToGoogleAppOnPlayStore(getContext());
-                } catch (ActivityNotFoundException | NullPointerException e) {
-                    // NullPointerException: android.os.Parcel.readException (Parcel.java:1478)
-                    e.printStackTrace();
-                }
-            }
+            startRayNeoSpeechRecognizer();
         } else {
             Log.e(TAG, "Can't perform search. Fragment is detached.");
         }
     };
+
+    protected void startRayNeoVoiceSearch() {
+        startRayNeoSpeechRecognizer();
+    }
+
+    protected boolean isRayNeoVoiceSearchActive() {
+        return mRayNeoSpeechRecognizer != null
+                || (mRayNeoSpeechIpcClient != null && mRayNeoSpeechIpcClient.isActive())
+                || (mRayNeoAiRuntimeAsrClient != null && mRayNeoAiRuntimeAsrClient.isActive());
+    }
+
+    private void startRayNeoSpeechRecognizer() {
+        try {
+            if (isRayNeoVoiceSearchActive()) {
+                voiceLog("start ignored; voice search already active");
+                return;
+            }
+
+            PermissionHelpers.verifyMicPermissions(getContext());
+            setRayNeoMicMode(true);
+            beep();
+            showListening();
+            voiceLog("airuntime start package="
+                    + (getContext() != null ? getContext().getPackageName() : "null"));
+            mRayNeoAiRuntimeAsrClient = new RayNeoAiRuntimeAsrClient(getContext(), new RayNeoAiRuntimeAsrClient.Callback() {
+                @Override
+                public void onConnected() {
+                    voiceLog("airuntime connected");
+                }
+
+                @Override
+                public void onAudioStart() {
+                    voiceLog("airuntime audio start");
+                }
+
+                @Override
+                public void onAudioEnd() {
+                    voiceLog("airuntime audio end");
+                }
+
+                @Override
+                public void onResult(String text, boolean finished) {
+                    voiceLog("airuntime result finished=" + finished + " text=" + text);
+                    if (text != null && !text.startsWith("initWorkflow=")
+                            && !text.startsWith("startWorkflow=")
+                            && !text.startsWith("vadStatus=")
+                            && !text.startsWith("notify type=")) {
+                        applyVoiceQuery(text, finished);
+                    }
+                    if (finished) {
+                        stopRayNeoAiRuntimeAsr();
+                    }
+                }
+
+                @Override
+                public void onError(String message) {
+                    voiceLog(message);
+                    showNotListening();
+                    setRayNeoMicMode(false);
+                    stopRayNeoAiRuntimeAsr();
+                }
+            });
+            mRayNeoAiRuntimeAsrClient.start();
+            mVoiceHandler.postDelayed(() -> {
+                if (mRayNeoAiRuntimeAsrClient != null && mRayNeoAiRuntimeAsrClient.isActive()) {
+                    voiceLog("airuntime timeout; no final result");
+                    showNotListening();
+                    setRayNeoMicMode(false);
+                    stopRayNeoAiRuntimeAsr();
+                }
+            }, 15_000L);
+        } catch (Throwable e) {
+            Log.e(TAG, "Speech recognition start failed: " + e.getMessage());
+            voiceLog("start failed " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            showNotListening();
+            setRayNeoMicMode(false);
+            stopRayNeoAiRuntimeAsr();
+        }
+    }
+
+    private void stopRayNeoAiRuntimeAsr() {
+        if (mRayNeoAiRuntimeAsrClient == null) {
+            return;
+        }
+
+        try {
+            mRayNeoAiRuntimeAsrClient.stop();
+        } catch (Throwable ignored) {
+        }
+        mRayNeoAiRuntimeAsrClient = null;
+    }
+
+    private void stopRayNeoSpeechIpc() {
+        if (mRayNeoSpeechIpcClient == null) {
+            return;
+        }
+
+        try {
+            mRayNeoSpeechIpcClient.stop();
+        } catch (Throwable ignored) {
+        }
+        mRayNeoSpeechIpcClient = null;
+    }
+
+    private Intent createRayNeoRecognizerIntent() {
+        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toString());
+        intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3);
+        intent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE,
+                getContext() != null ? getContext().getPackageName() : "");
+        return intent;
+    }
+
+    private String firstSpeechResult(Bundle bundle) {
+        if (bundle == null) {
+            return null;
+        }
+
+        ArrayList<String> matches = bundle.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+        return matches != null && matches.size() > 0 ? matches.get(0) : null;
+    }
+
+    private void stopRayNeoSpeechRecognizer() {
+        if (mRayNeoSpeechRecognizer == null) {
+            return;
+        }
+
+        try {
+            mRayNeoSpeechRecognizer.cancel();
+            mRayNeoSpeechRecognizer.destroy();
+        } catch (Throwable ignored) {
+        }
+        mRayNeoSpeechRecognizer = null;
+        mRayNeoRecognizerReady = false;
+    }
+
+    private String errorToString(int error) {
+        switch (error) {
+            case SpeechRecognizer.ERROR_AUDIO: return "ERROR_AUDIO";
+            case SpeechRecognizer.ERROR_CLIENT: return "ERROR_CLIENT";
+            case SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS: return "ERROR_INSUFFICIENT_PERMISSIONS";
+            case SpeechRecognizer.ERROR_NETWORK: return "ERROR_NETWORK";
+            case SpeechRecognizer.ERROR_NETWORK_TIMEOUT: return "ERROR_NETWORK_TIMEOUT";
+            case SpeechRecognizer.ERROR_NO_MATCH: return "ERROR_NO_MATCH";
+            case SpeechRecognizer.ERROR_RECOGNIZER_BUSY: return "ERROR_RECOGNIZER_BUSY";
+            case SpeechRecognizer.ERROR_SERVER: return "ERROR_SERVER";
+            case SpeechRecognizer.ERROR_SPEECH_TIMEOUT: return "ERROR_SPEECH_TIMEOUT";
+            default: return "ERROR_" + error;
+        }
+    }
+
+    private void applyVoiceQuery(String result, boolean submit) {
+        if (result == null || result.trim().length() == 0 || getActivity() == null) {
+            if (submit) {
+                setRayNeoMicMode(false);
+                mVoiceHandler.post(this::showNotListening);
+            }
+            return;
+        }
+
+        mVoiceHandler.post(() -> {
+            setSearchQuery(result.trim(), submit);
+            if (submit) {
+                showNotListening();
+                setRayNeoMicMode(false);
+            }
+        });
+    }
+
+    private void setRayNeoMicMode(boolean enabled) {
+        try {
+            Context context = getContext();
+            AudioManager audioManager = context != null
+                    ? (AudioManager) context.getSystemService(Context.AUDIO_SERVICE) : null;
+            if (audioManager != null) {
+                String value = enabled ? "voiceassistant" : "off";
+                audioManager.setParameters("audio_source_record=" + value);
+                audioManager.setParameters("audio_source=" + value);
+                Log.i(TAG, "RayNeo mic mode: " + value);
+                voiceLog("mic mode " + value);
+            }
+        } catch (Throwable e) {
+            Log.e(TAG, "Unable to set RayNeo mic mode: " + e.getMessage());
+            voiceLog("mic mode failed " + e.getClass().getSimpleName() + ": " + e.getMessage());
+        }
+    }
+
+    private void beep() {
+        try {
+            ToneGenerator tone = new ToneGenerator(AudioManager.STREAM_MUSIC, 80);
+            tone.startTone(ToneGenerator.TONE_PROP_BEEP, 160);
+        } catch (Throwable e) {
+            Log.e(TAG, "Unable to play speech start beep: " + e.getMessage());
+            voiceLog("beep failed " + e.getClass().getSimpleName() + ": " + e.getMessage());
+        }
+    }
+
+    private void voiceLog(String msg) {
+        android.util.Log.i(RAYNEO_VOICE_TAG, msg);
+    }
 }

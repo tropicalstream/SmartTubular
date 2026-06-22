@@ -389,6 +389,9 @@ public class SearchSupportFragment extends Fragment {
 
         // MOD: search settings button
         mSearchSettingsOrbView = mSearchBar.findViewById(com.liskovsoft.smartyoutubetv2.tv.R.id.search_settings_orb);
+        mSearchSettingsOrbView.setVisibility(View.GONE);
+        mSearchSettingsOrbView.setFocusable(false);
+        mSearchSettingsOrbView.setFocusableInTouchMode(false);
         mSearchSettingsOrbView.setOnFocusChangeListener((v, focused) -> {
             if (focused) {
                 Helpers.hideKeyboard(getContext(), v);

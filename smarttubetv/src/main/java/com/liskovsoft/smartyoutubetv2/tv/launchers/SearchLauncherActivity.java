@@ -9,7 +9,7 @@ public class SearchLauncherActivity extends MotherActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        SearchPresenter.instance(this).startSearch(null);
+        SearchPresenter.instance(this).startVoice();
 
         finish();
     }

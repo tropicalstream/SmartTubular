@@ -104,6 +104,9 @@ public class ChannelHeaderPresenter extends RowPresenter {
         SpeechOrbView speechOrbView = searchBar.findViewById(R.id.lb_search_bar_speech_orb);
         SearchEditText searchTextEditor = searchBar.findViewById(R.id.lb_search_text_editor);
         SearchOrbView searchSettingsOrbView = searchBar.findViewById(R.id.search_settings_orb);
+        searchSettingsOrbView.setVisibility(View.GONE);
+        searchSettingsOrbView.setFocusable(false);
+        searchSettingsOrbView.setFocusableInTouchMode(false);
         // Default recognizer. Used when there's no speech callbacks specified.
         searchBar.setSpeechRecognizer(SpeechRecognizer.createSpeechRecognizer(context));
         searchBar.setOnFocusChangeListener((v, focused) -> {

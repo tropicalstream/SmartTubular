@@ -284,6 +284,8 @@ public class VideoLoaderController extends BasePlayerController {
             mPlaylist.setCurrent(item);
             getPlayer().setVideo(item);
             getPlayer().resetPlayerState();
+            getPlayer().setPlayWhenReady(true);
+            Log.d(TAG, "RayNeo/autoplay: requested play after setVideo videoId=%s", item.videoId);
             loadFormatInfo(item);
         }
     }

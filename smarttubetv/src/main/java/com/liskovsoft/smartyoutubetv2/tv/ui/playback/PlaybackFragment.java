@@ -70,6 +70,7 @@ import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerTweaksData;
 import com.liskovsoft.smartyoutubetv2.common.utils.RayNeoDeviceUtil;
 import com.liskovsoft.smartyoutubetv2.common.utils.Utils;
 import com.liskovsoft.smartyoutubetv2.tv.R;
+import com.liskovsoft.smartyoutubetv2.tv.ui.common.keyhandler.RayNeoInputInterceptor;
 import com.liskovsoft.smartyoutubetv2.tv.adapter.VideoGroupObjectAdapter;
 import com.liskovsoft.smartyoutubetv2.tv.presenter.CustomListRowPresenter;
 import com.liskovsoft.smartyoutubetv2.tv.presenter.ShortsCardPresenter;
@@ -153,6 +154,152 @@ public class PlaybackFragment extends SeekModePlaybackFragment implements Playba
     };
     private long mProgressShowTimeMs;
     private String mSelectedVideoId;
+    // MOD: bridge that lets the RayNeo temple pad drive player-only actions
+    // (skip next/prev video, seek the scrubber, hide cursor in dim mode).
+    private final RayNeoInputInterceptor.PlayerActionBridge mRayNeoBridge =
+            new RayNeoInputInterceptor.PlayerActionBridge() {
+                @Override
+                public boolean isDimActive() {
+                    return mDimShown;
+                }
+
+                @Override
+                public void skipNext() {
+                    mDimHandler.post(() -> skipToNext());
+                }
+
+                @Override
+                public void skipPrevious() {
+                    mDimHandler.post(() -> skipToPrevious());
+                }
+
+                @Override
+                public void onControlInteraction() {
+                    mDimHandler.post(() -> resetControlAutoHideTimer(true));
+                }
+
+                @Override
+                public void play() {
+                    mDimHandler.post(() -> {
+                        if (!mDimShown) {
+                            setPlayWhenReady(true);
+                            resetControlAutoHideTimer(true);
+                        }
+                    });
+                }
+
+                @Override
+                public void togglePlayback() {
+                    mDimHandler.post(() -> {
+                        if (!mDimShown) {
+                            setPlayWhenReady(!getPlayWhenReady());
+                            resetControlAutoHideTimer(true);
+                        }
+                    });
+                }
+
+                @Override
+                public boolean seekToScreenX(float screenX, float screenY) {
+                    return rayNeoSeekToScreenX(screenX, screenY);
+                }
+
+                @Override
+                public boolean isInSuggestions(float screenX, float screenY) {
+                    return rayNeoIsInSuggestions(screenX, screenY);
+                }
+
+                @Override
+                public void exitPlayer() {
+                    mDimHandler.post(() -> {
+                        try {
+                            // Double-tap should leave the video. If dim mode is up,
+                            // drop dim first; otherwise close the player.
+                            if (mDimShown) {
+                                hideDimMode();
+                            } else {
+                                finish();
+                            }
+                        } catch (Throwable ignored) {
+                        }
+                    });
+                }
+            };
+
+    /** True if the screen point falls inside the suggestion thumbnail rows. */
+    private boolean rayNeoIsInSuggestions(float screenX, float screenY) {
+        try {
+            if (mDimShown || mRowsSupportFragment == null) {
+                return false;
+            }
+            androidx.leanback.widget.VerticalGridView vgv = mRowsSupportFragment.getVerticalGridView();
+            if (vgv == null || vgv.getVisibility() != View.VISIBLE || vgv.getHeight() <= 0) {
+                return false;
+            }
+            int[] loc = new int[2];
+            vgv.getLocationOnScreen(loc);
+            return screenX >= loc[0] && screenX < loc[0] + vgv.getWidth()
+                    && screenY >= loc[1] && screenY < loc[1] + vgv.getHeight();
+        } catch (Throwable e) {
+            return false;
+        }
+    }
+
+    /** Seek to the time under the pointer if it sits on the timeline scrubber. */
+    private boolean rayNeoSeekToScreenX(float screenX, float screenY) {
+        try {
+            if (mDimShown || getView() == null) {
+                return false;
+            }
+            View seekBar = getView().findViewById(R.id.playback_progress);
+            if (seekBar == null || seekBar.getVisibility() != View.VISIBLE || seekBar.getWidth() <= 0) {
+                android.util.Log.d("RayNeoInputInterceptor", "rayNeo timeline miss: seekbar unavailable");
+                return false;
+            }
+            int[] loc = new int[2];
+            seekBar.getLocationOnScreen(loc);
+            int left = loc[0];
+            int top = loc[1];
+            int w = seekBar.getWidth();
+            int h = seekBar.getHeight();
+            // The rendered bar is very thin on glasses; use a forgiving scrub
+            // lane, but keep button clicks safe by giving real controls priority
+            // before this method is called from RayNeoInputInterceptor.
+            float padY = Math.max(h * 2.5f, 28f);
+            if (screenY < top - padY || screenY > top + h + padY) {
+                android.util.Log.d("RayNeoInputInterceptor", "rayNeo timeline missY x=" + screenX
+                        + " y=" + screenY
+                        + " bar=[" + left + "," + top + "," + (left + w) + "," + (top + h) + "]"
+                        + " padY=" + padY);
+                return false;
+            }
+            if (screenX < left || screenX > left + w) {
+                android.util.Log.d("RayNeoInputInterceptor", "rayNeo timeline missX x=" + screenX
+                        + " y=" + screenY
+                        + " bar=[" + left + "," + top + "," + (left + w) + "," + (top + h) + "]");
+                return false;
+            }
+            long duration = getDurationMs();
+            if (duration <= 0) {
+                android.util.Log.d("RayNeoInputInterceptor", "rayNeo timeline miss: duration=" + duration);
+                return false;
+            }
+            float fraction = Math.max(0f, Math.min(1f, (screenX - left) / (float) w));
+            long target = (long) (fraction * duration);
+            long endGuardMs = duration > 10_000 ? 3_000 : 500;
+            long maxTarget = Math.max(0, duration - endGuardMs);
+            target = Math.min(target, maxTarget);
+            android.util.Log.d("RayNeoInputInterceptor", "rayNeo timeline seek x=" + screenX
+                    + " y=" + screenY
+                    + " bar=[" + left + "," + top + "," + (left + w) + "," + (top + h) + "]"
+                    + " target=" + target
+                    + " duration=" + duration);
+            setPositionMs(target);
+            onSeekPositionChanged(target);
+            return true;
+        } catch (Throwable e) {
+            return false;
+        }
+    }
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -182,6 +329,7 @@ public class PlaybackFragment extends SeekModePlaybackFragment implements Playba
         super.onActivityCreated(savedInstanceState);
 
         mPlaybackPresenter.onViewInitialized();
+        RayNeoInputInterceptor.setPlayerBridge(mRayNeoBridge);
 
         if (mSelectedVideoId != null) {
             mPlaybackPresenter.openVideo(mSelectedVideoId);
@@ -312,7 +460,24 @@ public class PlaybackFragment extends SeekModePlaybackFragment implements Playba
     }
 
     private void applyTickle(MotionEvent event) {
-        if (event.getAction() == MotionEvent.ACTION_DOWN) {
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+            case MotionEvent.ACTION_MOVE:
+            case MotionEvent.ACTION_HOVER_MOVE:
+            case MotionEvent.ACTION_SCROLL:
+                resetControlAutoHideTimer(event.getActionMasked() == MotionEvent.ACTION_DOWN);
+                break;
+            default:
+                break;
+        }
+    }
+
+    private void resetControlAutoHideTimer(boolean showControls) {
+        if (mDimShown || mPlaybackPresenter == null) {
+            return;
+        }
+
+        if (showControls || !isOverlayShown()) {
             tickle(); // show Player UI
         }
 
@@ -404,6 +569,7 @@ public class PlaybackFragment extends SeekModePlaybackFragment implements Playba
             return;
         }
         mDimShown = true;
+        RayNeoInputInterceptor.onDimModeChanged(true);
         if (mSubtitleManager != null) {
             mSubtitleManager.setDimActive(true);
         }
@@ -425,6 +591,7 @@ public class PlaybackFragment extends SeekModePlaybackFragment implements Playba
             return;
         }
         mDimShown = false;
+        RayNeoInputInterceptor.onDimModeChanged(false);
         if (mSubtitleManager != null) {
             mSubtitleManager.setDimActive(false);
         }
@@ -1187,6 +1354,9 @@ public class PlaybackFragment extends SeekModePlaybackFragment implements Playba
 
     @Override
     public void setPlayWhenReady(boolean play) {
+        android.util.Log.d("RayNeoInputInterceptor", "PlaybackFragment setPlayWhenReady=" + play
+                + " was=" + getPlayWhenReady()
+                + " video=" + (getVideo() != null ? getVideo().videoId : "null"));
         mExoPlayerController.setPlayWhenReady(play);
     }
 
@@ -1345,6 +1515,8 @@ public class PlaybackFragment extends SeekModePlaybackFragment implements Playba
     @Override
     public void onDestroy() {
         super.onDestroy();
+
+        RayNeoInputInterceptor.clearPlayerBridge(mRayNeoBridge);
 
         Log.d(TAG, "Destroying PlaybackFragment...");
 

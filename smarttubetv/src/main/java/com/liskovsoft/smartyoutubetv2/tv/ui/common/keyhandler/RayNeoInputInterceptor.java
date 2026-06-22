@@ -14,6 +14,7 @@ import com.ffalcon.mercury.android.sdk.touch.CommonTouchCallback;
 import com.ffalcon.mercury.android.sdk.touch.FlingArgs;
 import com.ffalcon.mercury.android.sdk.touch.TouchDispatcher;
 import com.ffalcon.mercury.android.sdk.util.MyTouchUtils;
+import com.liskovsoft.smartyoutubetv2.tv.R;
 
 import androidx.leanback.widget.VerticalGridView;
 import androidx.recyclerview.widget.RecyclerView;
@@ -54,6 +55,48 @@ public class RayNeoInputInterceptor {
     // pointer instead of injecting DPAD (which seeks the timeline). Gain and
     // the binocular coordinate mapping may need on-device tuning.
     private boolean mCursorMode = false;
+
+    // MOD: bridge to the player fragment so the pad can drive player-only
+    // actions (skip next/prev video, seek the scrubber, hide the cursor while
+    // dim mode is up) without the keyhandler holding a direct fragment ref.
+    public interface PlayerActionBridge {
+        boolean isDimActive();
+        void skipNext();
+        void skipPrevious();
+        void onControlInteraction();
+        void play();
+        void togglePlayback();
+        /** Seek if (screenX,screenY) lands on the timeline; return true if handled. */
+        boolean seekToScreenX(float screenX, float screenY);
+        /** True if the screen point is inside the suggestion (thumbnail) rows. */
+        boolean isInSuggestions(float screenX, float screenY);
+        /** Close the player deterministically (used by double-tap to exit). */
+        void exitPlayer();
+    }
+    private static volatile PlayerActionBridge sPlayerBridge;
+    private static volatile RayNeoInputInterceptor sActiveCursorInstance;
+    public static void setPlayerBridge(PlayerActionBridge bridge) { sPlayerBridge = bridge; }
+    public static void clearPlayerBridge(PlayerActionBridge bridge) {
+        if (sPlayerBridge == bridge) sPlayerBridge = null;
+    }
+    /** Called by the player when dim mode toggles, to hide/restore the pointer. */
+    public static void onDimModeChanged(boolean dimActive) {
+        RayNeoInputInterceptor inst = sActiveCursorInstance;
+        if (inst != null) inst.applyDimCursor(dimActive);
+    }
+
+    // ===== Cursor calibration (temporary tuning aid) =====
+    // When true, calibration walks the REAL player controls (play, CC, etc.):
+    // each in turn gets a GREEN outline drawn in its own content space (so it
+    // marks exactly where the control truly is). You aim the cursor at the
+    // outlined control and click; we log how far the click landed from that
+    // control's true centre (deltaScreen). Set false again after calibrating.
+    private static final boolean CALIBRATION_MODE = false;
+    private int mCalibIndex = 0;
+    private java.util.List<View> mCalibControls;
+    private android.graphics.drawable.GradientDrawable mCalibRing;
+    private View mCalibHighlighted;
+
     private View mCursorView;
     private View mCursorHost;
     private float mCursorX = -1f;
@@ -63,6 +106,7 @@ public class RayNeoInputInterceptor {
     private boolean mCursorAnimating = false;
     private float mClickX = -1f;
     private float mClickY = -1f;
+    private View mDownFocusView;
     private float mLastContX = 0f;
     private float mLastContY = 0f;
     private float mGestureMoveX = 0f;
@@ -81,13 +125,33 @@ public class RayNeoInputInterceptor {
     private static final float CURSOR_SMOOTHING = 0.35f;
     private static final float CLICK_CANCEL_MOVE_PX = 18f;
     private static final long CURSOR_AUTO_HIDE_MS = 3_000L;
+    // Edge-scroll: pushing the pointer past a screen edge drives the app's
+    // built-in D-pad navigation, so off-screen content (related videos /
+    // chapters below, side menus) stays reachable while in cursor mode.
+    private static final float EDGE_SCROLL_THRESHOLD_PX = 90f;
+    private static final long EDGE_SCROLL_COOLDOWN_MS = 300L;
+    private float mEdgeAccumX = 0f;
+    private float mEdgeAccumY = 0f;
+    private long mLastEdgeScrollMs = 0L;
     private static final long SWIPE_CLICK_SUPPRESS_MS = 450L;
     private static final long SWIPE_NAV_COOLDOWN_MS = 320L;
+    private static final long SEARCH_ORB_FOCUS_LATCH_MS = 8_000L;
+    private long mLastCursorActivityMs;
+    private long mSearchOrbFocusUntilMs;
     private final Runnable mHideCursorRunnable = new Runnable() {
         @Override
         public void run() {
-            if (mCursorView != null) {
+            if (mCursorView == null) {
+                return;
+            }
+            // Only hide once it's really been CURSOR_AUTO_HIDE_MS since the last
+            // interaction; otherwise re-arm for the remaining time. This makes the
+            // countdown immune to any missed/duplicate reschedules.
+            long remaining = CURSOR_AUTO_HIDE_MS - (SystemClock.uptimeMillis() - mLastCursorActivityMs);
+            if (remaining <= 0) {
                 mCursorView.setVisibility(View.GONE);
+            } else {
+                mUiHandler.postDelayed(this, remaining);
             }
         }
     };
@@ -118,6 +182,19 @@ public class RayNeoInputInterceptor {
     public RayNeoInputInterceptor(Activity activity) {
         mActivity = activity;
         android.util.Log.d(TAG, "Initializing for Activity: " + activity.getClass().getSimpleName());
+        // Voice-first search on the glasses: use the embedded (offline) speech
+        // recognizer (the system one needs Google services the RayNeo lacks) and
+        // auto-start it the moment the search screen opens, so no system keyboard
+        // (which can't render across both lenses) is ever needed. Settings persist
+        // in prefs, so doing this on init is enough.
+        try {
+            com.liskovsoft.smartyoutubetv2.common.prefs.SearchData sd =
+                    com.liskovsoft.smartyoutubetv2.common.prefs.SearchData.instance(activity);
+            sd.setSpeechRecognizerType(com.liskovsoft.smartyoutubetv2.common.prefs.SearchData.SPEECH_RECOGNIZER_GOTEV);
+            sd.setInstantVoiceSearchEnabled(true);
+        } catch (Throwable e) {
+            android.util.Log.e(TAG, "voice-first setup failed: " + e.getMessage());
+        }
         try {
             initDispatcher();
         } catch (Throwable e) {
@@ -177,10 +254,23 @@ public class RayNeoInputInterceptor {
                 // gesture, so a tap clicks there even if the tap jitters it.
                 mClickX = mCursorX;
                 mClickY = mCursorY;
+                // Snapshot the focused view BEFORE the tap can flip the window
+                // into touch mode (which clears focus / lets leanback re-pick the
+                // content rows). A non-cursor tap activates THIS exact view, so
+                // e.g. the search orb opens search instead of a video below it.
+                mDownFocusView = mActivity.getWindow() != null
+                        ? mActivity.getWindow().getCurrentFocus() : null;
                 mInjectedContinuousThisSwipe = false;
             }
 
             mTouchDispatcher.onMotionEvent(event, mTouchCallback);
+
+            // Any temple-pad interaction (re)starts the pointer auto-hide
+            // countdown, so the 3s always begins from the LAST interaction —
+            // including the lift at the end of a gesture.
+            if (mCursorMode) {
+                showCursorAndScheduleHide();
+            }
 
             if ((event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL)
                     && mPendingSwipeKeyCode != 0) {
@@ -204,7 +294,7 @@ public class RayNeoInputInterceptor {
                         // through to injectKeyEventAsync and clears touch mode).
                         exitTouchModeAsync();
                     } else {
-                        injectKeyEventAsync(keyCode);
+                        injectNavKeyWithVerify(keyCode);
                     }
                 }, 35L);
             }
@@ -237,6 +327,11 @@ public class RayNeoInputInterceptor {
                         android.util.Log.d(TAG, "onTPClick suppressed after cursor swipe");
                         return true;
                     }
+                    if (CALIBRATION_MODE) {
+                        android.util.Log.d(TAG, "onTPClick (calibration) - recording point");
+                        recordCalibrationClick();
+                        return true;
+                    }
                     android.util.Log.d(TAG, "onTPClick (cursor) - clicking at pointer");
                     clickAtCursor();
                     return true;
@@ -248,8 +343,19 @@ public class RayNeoInputInterceptor {
 
             @Override
             public boolean onTPDoubleClick() {
-                log("callback onTPDoubleClick -> BACK focus=" + describeFocus());
-                injectKeyEventAsync(KeyEvent.KEYCODE_BACK);
+                log("callback onTPDoubleClick focus=" + describeFocus());
+                // In the player, exit deterministically: a plain BACK only hides
+                // the controls overlay when it's showing (which the first tap
+                // often tickles up), so the video wouldn't close. Outside the
+                // player, fall back to BACK.
+                PlayerActionBridge bridge = sPlayerBridge;
+                if (bridge != null) {
+                    android.util.Log.d(TAG, "onTPDoubleClick -> exitPlayer");
+                    bridge.exitPlayer();
+                } else {
+                    android.util.Log.d(TAG, "onTPDoubleClick -> BACK");
+                    injectKeyEventAsync(KeyEvent.KEYCODE_BACK);
+                }
                 return true;
             }
 
@@ -257,7 +363,16 @@ public class RayNeoInputInterceptor {
             public boolean onTPSlideForward(FlingArgs flingArgs) {
                 log("callback onTPSlideForward injectedThisSwipe=" + mInjectedContinuousThisSwipe
                         + " focus=" + describeFocus());
-                if (mCursorMode) return true; // swallow: no seek in pointer mode
+                if (mCursorMode) {
+                    // Only skip videos while dim caption mode is up; with the
+                    // video visible a right swipe does nothing (no accidental skip).
+                    PlayerActionBridge b = sPlayerBridge;
+                    if (b != null && b.isDimActive()) {
+                        b.skipNext();
+                        mSuppressClickThisGesture = true;
+                    }
+                    return true;
+                }
                 if (!mInjectedContinuousThisSwipe) {
                     mInjectedContinuousThisSwipe = injectSwipeKeyEvent(KeyEvent.KEYCODE_DPAD_RIGHT);
                 }
@@ -268,7 +383,15 @@ public class RayNeoInputInterceptor {
             public boolean onTPSlideBackward(FlingArgs flingArgs) {
                 log("callback onTPSlideBackward injectedThisSwipe=" + mInjectedContinuousThisSwipe
                         + " focus=" + describeFocus());
-                if (mCursorMode) return true;
+                if (mCursorMode) {
+                    // Only skip videos while dim caption mode is up.
+                    PlayerActionBridge b = sPlayerBridge;
+                    if (b != null && b.isDimActive()) {
+                        b.skipPrevious();
+                        mSuppressClickThisGesture = true;
+                    }
+                    return true;
+                }
                 if (!mInjectedContinuousThisSwipe) {
                     mInjectedContinuousThisSwipe = injectSwipeKeyEvent(KeyEvent.KEYCODE_DPAD_LEFT);
                 }
@@ -393,33 +516,177 @@ public class RayNeoInputInterceptor {
         return true;
     }
 
+    /** True if the view (or an ancestor) is a leanback search orb. */
+    private boolean isSearchOrb(View v) {
+        View cur = v;
+        while (cur != null) {
+            if (cur.getId() == R.id.title_orb) {
+                return true;
+            }
+            if (cur.getClass().getName().contains("SearchOrb")) {
+                return true;
+            }
+            ViewParent p = cur.getParent();
+            cur = (p instanceof View) ? (View) p : null;
+        }
+        return false;
+    }
+
+    /** True if the view (or an ancestor) is the leanback speech (mic) orb. */
+    private boolean isSpeechOrb(View v) {
+        View cur = v;
+        while (cur != null) {
+            if (cur.getClass().getName().contains("SpeechOrb")) {
+                return true;
+            }
+            ViewParent p = cur.getParent();
+            cur = (p instanceof View) ? (View) p : null;
+        }
+        return false;
+    }
+
+    private View findTitleSearchOrb() {
+        if (mActivity.getWindow() == null) {
+            return null;
+        }
+
+        View decor = mActivity.getWindow().getDecorView();
+        return decor != null ? decor.findViewById(R.id.title_orb) : null;
+    }
+
+    private boolean isTitleSearchOrbActive(View target) {
+        View orb = findTitleSearchOrb();
+        if (orb == null || !orb.isShown()) {
+            return false;
+        }
+
+        boolean latched = SystemClock.uptimeMillis() < mSearchOrbFocusUntilMs;
+        boolean active = isSearchOrb(target)
+                || latched
+                || orb.isFocused()
+                || orb.hasFocus()
+                || orb.isSelected()
+                || orb.isActivated()
+                || orb.getScaleX() > 1.01f
+                || orb.getScaleY() > 1.01f;
+
+        if (active) {
+            android.util.Log.d(TAG, "title search orb active: target="
+                    + describeViewForLog(target)
+                    + " focused=" + orb.isFocused()
+                    + " hasFocus=" + orb.hasFocus()
+                    + " selected=" + orb.isSelected()
+                    + " activated=" + orb.isActivated()
+                    + " latched=" + latched
+                    + " scale=" + orb.getScaleX() + "," + orb.getScaleY());
+        }
+
+        return active;
+    }
+
+    private void rememberTitleSearchOrbFocus(String reason) {
+        try {
+            View focus = mActivity.getWindow() != null ? mActivity.getWindow().getCurrentFocus() : null;
+            View orb = findTitleSearchOrb();
+            boolean active = orb != null && orb.isShown()
+                    && (isSearchOrb(focus) || orb.isFocused() || orb.hasFocus()
+                    || orb.isSelected() || orb.isActivated()
+                    || orb.getScaleX() > 1.01f || orb.getScaleY() > 1.01f);
+            if (active) {
+                mSearchOrbFocusUntilMs = SystemClock.uptimeMillis() + SEARCH_ORB_FOCUS_LATCH_MS;
+                android.util.Log.d(TAG, "latched title search orb focus reason=" + reason
+                        + " until=" + mSearchOrbFocusUntilMs
+                        + " focus=" + describeViewForLog(focus)
+                        + " orbFocus=" + orb.isFocused()
+                        + " orbHasFocus=" + orb.hasFocus()
+                        + " orbScale=" + orb.getScaleX() + "," + orb.getScaleY());
+            } else if (reason != null && reason.startsWith("keyAfterSend")) {
+                mSearchOrbFocusUntilMs = 0L;
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private String describeViewForLog(View view) {
+        if (view == null) {
+            return "null";
+        }
+
+        return view.getClass().getSimpleName()
+                + "#" + view.getId()
+                + (view.getContentDescription() != null ? "[" + view.getContentDescription() + "]" : "");
+    }
+
     private void injectClick() {
         mActivity.runOnUiThread(() -> {
             try {
-                ensureFocus();
-                View focus = null;
-                if (mActivity.getWindow() != null) {
-                    focus = mActivity.getWindow().getCurrentFocus();
+                // Click the view that was focused when the tap STARTED (captured
+                // at ACTION_DOWN, before touch mode could shuffle focus to the
+                // content rows). This keeps the search orb / header buttons
+                // activating their own action instead of a video below them.
+                final View target = mDownFocusView != null ? mDownFocusView
+                        : (mActivity.getWindow() != null ? mActivity.getWindow().getCurrentFocus() : null);
+
+                // The leanback search orb's own activation misbehaves on this
+                // device (even in stock SmartTube it focuses/plays a video below
+                // instead of opening search), so when the orb is the target we
+                // launch the real search screen (with mic) directly.
+                if (isTitleSearchOrbActive(target)) {
+                    android.util.Log.d(TAG, "injectClick -> open Search voice screen directly");
+                    com.liskovsoft.smartyoutubetv2.common.app.presenters.SearchPresenter
+                            .instance(mActivity).startVoice();
+                    return;
                 }
-                if (focus != null) {
-                    android.util.Log.d(TAG, "Explicitly clicking focused view: " + focus.getClass().getSimpleName());
-                    boolean clicked = focus.performClick();
-                    if (!clicked) {
-                        android.util.Log.d(TAG, "performClick returned false, falling back to KeyEvent");
-                        injectKeyEventAsync(KeyEvent.KEYCODE_DPAD_CENTER);
+
+                // Mic / speech orb -> start voice recognition directly (its own
+                // activation misbehaves the same way the search orb's does).
+                if (isSpeechOrb(target)) {
+                    android.util.Log.d(TAG, "injectClick -> startVoice (speech orb)");
+                    com.liskovsoft.smartyoutubetv2.common.app.presenters.SearchPresenter
+                            .instance(mActivity).startVoice();
+                    return;
+                }
+
+                // Search text field -> NO system keyboard on the glasses (it only
+                // renders in one lens and triggers a contacts prompt). Re-start
+                // voice instead.
+                if (target instanceof android.widget.EditText) {
+                    android.util.Log.d(TAG, "injectClick -> startVoice (search field, no keyboard)");
+                    com.liskovsoft.smartyoutubetv2.common.app.presenters.SearchPresenter
+                            .instance(mActivity).startVoice();
+                    return;
+                }
+
+                if (target != null && target.isShown()) {
+                    android.util.Log.d(TAG, "injectClick performClick captured="
+                            + target.getClass().getSimpleName()
+                            + (target.getContentDescription() != null ? "[" + target.getContentDescription() + "]" : ""));
+                    if (target.performClick()) {
+                        return;
                     }
-                } else {
-                    android.util.Log.d(TAG, "No focused view found, falling back to KeyEvent");
-                    injectKeyEventAsync(KeyEvent.KEYCODE_DPAD_CENTER);
+                    // Some views need a real key; refocus and center on it.
+                    target.requestFocus();
+                    injectKeyEventAsync(KeyEvent.KEYCODE_DPAD_CENTER, null, true);
+                    return;
                 }
+                android.util.Log.d(TAG, "injectClick -> DPAD_CENTER (no captured focus)");
+                injectKeyEventAsync(KeyEvent.KEYCODE_DPAD_CENTER, null, true);
             } catch (Throwable e) {
-                android.util.Log.e(TAG, "Error in injectClick: " + e.getMessage());
-                injectKeyEventAsync(KeyEvent.KEYCODE_DPAD_CENTER);
+                android.util.Log.e(TAG, "injectClick failed: " + e.getMessage());
+                injectKeyEventAsync(KeyEvent.KEYCODE_DPAD_CENTER, null, true);
             }
         });
     }
 
     private void injectKeyEventAsync(int keyCode) {
+        injectKeyEventAsync(keyCode, null, false);
+    }
+
+    private void injectKeyEventAsync(int keyCode, final Runnable afterSent) {
+        injectKeyEventAsync(keyCode, afterSent, false);
+    }
+
+    private void injectKeyEventAsync(int keyCode, final Runnable afterSent, final boolean preserveFocus) {
         log("queue key=" + keyToString(keyCode) + " focus=" + describeFocus());
         sInputExecutor.execute(() -> {
             if (mActivity.isFinishing() || mActivity.isDestroyed()) {
@@ -428,9 +695,14 @@ public class RayNeoInputInterceptor {
             }
 
             try {
-                // Ensure focus highlight is visible before injecting
-                ensureFocus();
-                
+                // Ensure focus highlight is visible before injecting. Skip when
+                // preserving the current selection (e.g. activating the focused
+                // search orb): requestFocus on the decor would grab the first
+                // content item (a video) and play it instead.
+                if (!preserveFocus) {
+                    ensureFocus();
+                }
+
                 android.app.Instrumentation inst = new android.app.Instrumentation();
 
                 // Force the system out of touch mode so the D-pad event isn't
@@ -451,14 +723,11 @@ public class RayNeoInputInterceptor {
                         + " nowTouchMode=" + (decor != null && decor.isInTouchMode())
                         + " focusBeforeSend=" + describeFocus());
 
-                // setInTouchMode(false) is slow/unreliable on this device, so
-                // touch mode often hasn't cleared by now. When it hasn't, the
-                // FIRST D-pad key is consumed just LEAVING touch mode (focus
-                // appears but doesn't move) — so a directional key has to be
-                // sent twice: the first exits touch mode, the second navigates.
-                // This is what made grid items highlight only every other swipe.
-                boolean stillInTouchMode = decor != null && decor.isInTouchMode();
-
+                // Send exactly ONE key here. The "first key wasted exiting touch
+                // mode vs. first key navigates" ambiguity is resolved by the
+                // caller (injectNavKeyWithVerify): it checks whether the list's
+                // selected position actually moved and only re-sends if it
+                // didn't — so we never blindly double-send and skip an item.
                 long now = SystemClock.uptimeMillis();
                 KeyEvent downEvent = new KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0, 0, -1, 0, 0,
                         android.view.InputDevice.SOURCE_KEYBOARD);
@@ -466,22 +735,22 @@ public class RayNeoInputInterceptor {
                         android.view.InputDevice.SOURCE_KEYBOARD);
                 inst.sendKeySync(downEvent);
                 inst.sendKeySync(upEvent);
-                if (stillInTouchMode && isDpadNavigationKey(keyCode)) {
-                    long now2 = SystemClock.uptimeMillis();
-                    KeyEvent down2 = new KeyEvent(now2, now2, KeyEvent.ACTION_DOWN, keyCode, 0, 0, -1, 0, 0,
-                            android.view.InputDevice.SOURCE_KEYBOARD);
-                    KeyEvent up2 = new KeyEvent(now2, now2 + 10, KeyEvent.ACTION_UP, keyCode, 0, 0, -1, 0, 0,
-                            android.view.InputDevice.SOURCE_KEYBOARD);
-                    inst.sendKeySync(down2);
-                    inst.sendKeySync(up2);
-                    log("sent SECOND nav key (was in touch mode) key=" + keyToString(keyCode));
-                }
                 log("sent instrumentation key=" + keyToString(keyCode)
                         + " focusAfterSend=" + describeFocus());
+                if (isDpadNavigationKey(keyCode)) {
+                    mActivity.runOnUiThread(() ->
+                            rememberTitleSearchOrbFocus("keyAfterSend:" + keyToString(keyCode)));
+                }
                 
                 // SmartTube dialogs/menus sometimes prefer ENTER over DPAD_CENTER
                 if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER) {
                     inst.sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER);
+                }
+                // Notify the caller (e.g. the nav verifier) that the key has
+                // ACTUALLY been injected — so it can check whether the move
+                // happened instead of guessing a fixed delay.
+                if (afterSent != null) {
+                    mActivity.runOnUiThread(afterSent);
                 }
             } catch (Throwable e) {
                 android.util.Log.e(TAG, "Instrumentation key failed key=" + keyToString(keyCode)
@@ -503,9 +772,55 @@ public class RayNeoInputInterceptor {
                             + " downHandled=" + downHandled
                             + " upHandled=" + upHandled
                             + " focusAfter=" + describeFocus());
+                    if (isDpadNavigationKey(keyCode)) {
+                        rememberTitleSearchOrbFocus("keyAfterSendFallback:" + keyToString(keyCode));
+                    }
                 });
             }
         });
+    }
+
+    /** Send a nav key, then verify the list's selected position actually moved;
+     *  if it didn't (the first key was consumed leaving touch mode), send once
+     *  more. Avoids both "didn't move" (menu) and "moved twice / skipped a row"
+     *  (video rows) — the two screens consume the first key differently. */
+    private void injectNavKeyWithVerify(final int keyCode) {
+        if (!isDpadNavigationKey(keyCode)) {
+            injectKeyEventAsync(keyCode);
+            return;
+        }
+        final int before = navGridSelectedPosition();
+        // Verify only AFTER the key is actually injected (the injection waits on
+        // a touch-mode poll, so a fixed timer fires too early and always resends
+        // → skipped rows). The callback runs once the key has been sent; give
+        // leanback a brief moment to update the selection, then check.
+        injectKeyEventAsync(keyCode, () -> mUiHandler.postDelayed(() -> {
+            int after = navGridSelectedPosition();
+            if (before != Integer.MIN_VALUE && after == before) {
+                log("nav verify: selection unchanged (pos=" + before + "), resending " + keyToString(keyCode));
+                injectKeyEventAsync(keyCode);
+            } else {
+                log("nav verify: moved " + before + " -> " + after + " key=" + keyToString(keyCode));
+            }
+        }, 90L));
+    }
+
+    /** Selected position of the VerticalGridView holding the current focus (or
+     *  the visible one) — used to detect whether a nav key actually moved. */
+    private int navGridSelectedPosition() {
+        if (mActivity.getWindow() == null) {
+            return Integer.MIN_VALUE;
+        }
+        View focus = mActivity.getWindow().getCurrentFocus();
+        View decor = mActivity.getWindow().getDecorView();
+        if (focus == null && decor != null) {
+            focus = decor.findFocus();
+        }
+        VerticalGridView grid = focus != null ? findAncestorVerticalGridView(focus) : null;
+        if (grid == null) {
+            grid = findVisibleVerticalGridView(decor);
+        }
+        return grid != null ? grid.getSelectedPosition() : Integer.MIN_VALUE;
     }
 
     /** Leave touch mode (off the main thread) so a programmatic focus move via
@@ -558,6 +873,59 @@ public class RayNeoInputInterceptor {
         });
     }
 
+    /** Nearest focusable view to the left/right of {@code current} on a similar row. */
+    private View findNearestFocusableHorizontal(View current, int direction) {
+        if (mActivity.getWindow() == null || mActivity.getWindow().getDecorView() == null) {
+            return null;
+        }
+        int[] cl = new int[2];
+        current.getLocationOnScreen(cl);
+        float ccx = cl[0] + current.getWidth() / 2f;
+        float ccy = cl[1] + current.getHeight() / 2f;
+        java.util.List<View> focusables = new java.util.ArrayList<>();
+        collectFocusables(mActivity.getWindow().getDecorView(), focusables);
+        View best = null;
+        float bestDist = Float.MAX_VALUE;
+        for (View v : focusables) {
+            if (v == current) {
+                continue;
+            }
+            int[] vl = new int[2];
+            v.getLocationOnScreen(vl);
+            float vx = vl[0] + v.getWidth() / 2f;
+            float vy = vl[1] + v.getHeight() / 2f;
+            boolean rightWay = direction == View.FOCUS_LEFT ? vx < ccx - 4f : vx > ccx + 4f;
+            if (!rightWay) {
+                continue;
+            }
+            // Keep to roughly the same row as the search bar.
+            if (Math.abs(vy - ccy) > Math.max(current.getHeight(), v.getHeight()) + 8f) {
+                continue;
+            }
+            float dist = Math.abs(vx - ccx) + Math.abs(vy - ccy) * 0.5f;
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = v;
+            }
+        }
+        return best;
+    }
+
+    private void collectFocusables(View v, java.util.List<View> out) {
+        if (v == null || v.getVisibility() != View.VISIBLE || v == mCursorView) {
+            return;
+        }
+        if (v.isFocusable() && v.isShown() && v.getWidth() > 0 && v.getHeight() > 0) {
+            out.add(v);
+        }
+        if (v instanceof android.view.ViewGroup) {
+            android.view.ViewGroup g = (android.view.ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                collectFocusables(g.getChildAt(i), out);
+            }
+        }
+    }
+
     private boolean moveFocusForNavigationKey(int keyCode) {
         if (!isDpadNavigationKey(keyCode)) {
             return false;
@@ -602,6 +970,15 @@ public class RayNeoInputInterceptor {
             View target = findDeterministicFocusTarget(current, direction);
             if (target == null) {
                 target = current.focusSearch(direction);
+            }
+            // The search EditText swallows LEFT/RIGHT for its text caret, so
+            // focusSearch returns null or itself and you can't reach the mic /
+            // settings / submit. Fall back to the nearest focusable control in
+            // that direction.
+            if ((direction == View.FOCUS_LEFT || direction == View.FOCUS_RIGHT)
+                    && (target == null || target == current)
+                    && current instanceof android.widget.EditText) {
+                target = findNearestFocusableHorizontal(current, direction);
             }
 
             log("focus move key=" + keyToString(keyCode)
@@ -960,6 +1337,8 @@ public class RayNeoInputInterceptor {
 
     public void setCursorMode(final boolean enabled) {
         mCursorMode = enabled;
+        if (enabled) sActiveCursorInstance = this;
+        else if (sActiveCursorInstance == this) sActiveCursorInstance = null;
         mActivity.runOnUiThread(() -> {
             try {
                 if (enabled) {
@@ -1010,9 +1389,150 @@ public class RayNeoInputInterceptor {
             positionCursor();
             android.util.Log.d(TAG, "cursor added host=" + host.getClass().getSimpleName()
                     + " halfW=" + mHalfWidth + " center=" + mCursorX + "," + mCursorY);
+            if (CALIBRATION_MODE) {
+                // Controls may not be laid out yet; start once they're up.
+                mUiHandler.postDelayed(this::startCalibration, 1500);
+            }
         } catch (Throwable e) {
             android.util.Log.e(TAG, "ensureCursorView failed: " + e.getMessage());
         }
+    }
+
+    /** Collect the real, labelled player controls (play, CC, settings, ...). */
+    private java.util.List<View> collectControls() {
+        java.util.List<View> out = new java.util.ArrayList<>();
+        View decor = mActivity.getWindow() != null ? mActivity.getWindow().getDecorView() : null;
+        if (decor != null) {
+            collectControlsRec(decor, out);
+            java.util.Collections.sort(out, (a, b) -> {
+                int[] la = new int[2];
+                int[] lb = new int[2];
+                a.getLocationOnScreen(la);
+                b.getLocationOnScreen(lb);
+                if (Math.abs(la[1] - lb[1]) > 12) return Integer.compare(la[1], lb[1]);
+                return Integer.compare(la[0], lb[0]);
+            });
+        }
+        return out;
+    }
+
+    private void collectControlsRec(View v, java.util.List<View> out) {
+        if (v == null || v.getVisibility() != View.VISIBLE || v == mCursorView) {
+            return;
+        }
+        if (v instanceof android.view.ViewGroup) {
+            android.view.ViewGroup g = (android.view.ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                collectControlsRec(g.getChildAt(i), out);
+            }
+        }
+        CharSequence desc = v.getContentDescription();
+        // Labelled, tappable, button-sized => a real control (not a card/background).
+        if ((v.isClickable() || v.isFocusable()) && desc != null && desc.length() > 0
+                && v.getWidth() > 0 && v.getHeight() > 0
+                && v.getWidth() < (mHalfWidth > 0 ? mHalfWidth : 640)) {
+            out.add(v);
+        }
+    }
+
+    /** (Re)gather the controls and outline the first one to aim at. */
+    private void startCalibration() {
+        mCalibControls = collectControls();
+        mCalibIndex = 0;
+        if (mCalibControls.isEmpty()) {
+            android.util.Log.d(TAG, "CALIB: no controls visible yet — move the pad to bring up the "
+                    + "player controls, then click once to (re)start calibration.");
+            return;
+        }
+        android.util.Log.d(TAG, "CALIB START: " + mCalibControls.size()
+                + " controls. Aim the cursor at the GREEN-outlined control and click.");
+        highlightCalibControl(0);
+    }
+
+    /** Draw a green outline on control i, in the control's own coordinate space. */
+    private void highlightCalibControl(int i) {
+        if (mCalibControls == null || i < 0 || i >= mCalibControls.size()) {
+            return;
+        }
+        if (mCalibHighlighted != null && mCalibRing != null) {
+            mCalibHighlighted.getOverlay().remove(mCalibRing);
+        }
+        View c = mCalibControls.get(i);
+        if (mCalibRing == null) {
+            float density = mActivity.getResources().getDisplayMetrics().density;
+            mCalibRing = new android.graphics.drawable.GradientDrawable();
+            mCalibRing.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+            mCalibRing.setStroke(Math.round(density * 3f), 0xFF00FF00);
+        }
+        mCalibRing.setBounds(0, 0, c.getWidth(), c.getHeight());
+        c.getOverlay().add(mCalibRing);
+        mCalibHighlighted = c;
+        int[] loc = new int[2];
+        c.getLocationOnScreen(loc);
+        android.util.Log.d(TAG, "CALIB target " + (i + 1) + "/" + mCalibControls.size()
+                + " desc=" + c.getContentDescription()
+                + " centerScreen=(" + (loc[0] + c.getWidth() / 2f) + "," + (loc[1] + c.getHeight() / 2f) + ")"
+                + " size=" + c.getWidth() + "x" + c.getHeight());
+    }
+
+    /** Log how far the click landed from the outlined control's true centre. */
+    private void recordCalibrationClick() {
+        mActivity.runOnUiThread(() -> {
+            try {
+                if (mCalibControls == null || mCalibControls.isEmpty()) {
+                    startCalibration();
+                    return;
+                }
+                int i = mCalibIndex;
+                View c = mCalibControls.get(i);
+                int[] cl = new int[2];
+                c.getLocationOnScreen(cl);
+                float aimX = cl[0] + c.getWidth() / 2f;
+                float aimY = cl[1] + c.getHeight() / 2f;
+
+                float cx = mClickX >= 0f ? mClickX : mCursorX;
+                float cy = mClickY >= 0f ? mClickY : mCursorY;
+                View decor = mActivity.getWindow() != null ? mActivity.getWindow().getDecorView() : null;
+                float decorX = cx, decorY = cy, screenX = cx, screenY = cy;
+                if (mCursorHost != null && decor != null) {
+                    int[] hostLoc = new int[2];
+                    int[] decorLoc = new int[2];
+                    mCursorHost.getLocationOnScreen(hostLoc);
+                    decor.getLocationOnScreen(decorLoc);
+                    decorX = hostLoc[0] - decorLoc[0] + cx;
+                    decorY = hostLoc[1] - decorLoc[1] + cy;
+                    screenX = hostLoc[0] + cx;
+                    screenY = hostLoc[1] + cy;
+                }
+                String hit = "none";
+                if (decor != null) {
+                    View t = findClickableAt(decor, decorX, decorY);
+                    if (t != null) {
+                        hit = t.getClass().getSimpleName()
+                                + (t.getContentDescription() != null ? "[" + t.getContentDescription() + "]" : "");
+                    }
+                }
+                // CSV: CALIB,<n>,aim,<desc>,aimCenter,ax,ay,cursor,cx,cy,clickScreen,sx,sy,deltaScreen,dx,dy,hit,<view>
+                android.util.Log.d(TAG, "CALIB," + (i + 1)
+                        + ",aim," + c.getContentDescription()
+                        + ",aimCenter," + aimX + "," + aimY
+                        + ",cursor," + cx + "," + cy
+                        + ",clickScreen," + screenX + "," + screenY
+                        + ",deltaScreen," + (screenX - aimX) + "," + (screenY - aimY)
+                        + ",hit," + hit);
+
+                mCalibIndex++;
+                if (mCalibIndex >= mCalibControls.size()) {
+                    android.util.Log.d(TAG, "CALIB COMPLETE (" + mCalibControls.size()
+                            + " controls). Restarting at control 1.");
+                    mCalibControls = collectControls();
+                    mCalibIndex = 0;
+                }
+                highlightCalibControl(mCalibIndex);
+            } catch (Throwable e) {
+                android.util.Log.e(TAG, "recordCalibrationClick failed: " + e.getMessage());
+            }
+        });
     }
 
     private void positionCursor() {
@@ -1048,10 +1568,93 @@ public class RayNeoInputInterceptor {
             // real (left) content and never wanders onto the mirror.
             float maxX = mHalfWidth > 0 ? mHalfWidth : (parent != null ? parent.getWidth() : mCursorTargetX);
             float maxY = parent != null ? parent.getHeight() : mCursorTargetY;
+            // Before clamping, see if the user is pushing past an edge; if so,
+            // drive the built-in D-pad navigation in that direction.
+            maybeEdgeScroll(-mCursorTargetX, mCursorTargetX - maxX,
+                    -mCursorTargetY, mCursorTargetY - maxY);
             mCursorTargetX = Math.max(0f, Math.min(maxX, mCursorTargetX));
             mCursorTargetY = Math.max(0f, Math.min(maxY, mCursorTargetY));
             startCursorAnimation();
         });
+    }
+
+    private void notifyPlayerControlInteraction() {
+        PlayerActionBridge bridge = sPlayerBridge;
+        if (bridge != null && !bridge.isDimActive()) {
+            bridge.onControlInteraction();
+        }
+    }
+
+    /**
+     * Accumulate how far the pointer is being pushed past each edge and, once a
+     * direction passes the threshold, inject a single D-pad key so the app's
+     * own navigation scrolls/opens whatever lives off-screen. Sustained push is
+     * required (the accumulator resets the moment you stop pushing that way), so
+     * it won't fire from normal pointer movement.
+     */
+    private void maybeEdgeScroll(float overLeft, float overRight, float overUp, float overDown) {
+        PlayerActionBridge bridge = sPlayerBridge;
+        if (bridge != null && bridge.isDimActive()) {
+            mEdgeAccumX = 0f;
+            mEdgeAccumY = 0f;
+            return;
+        }
+        if (overRight > 0f) mEdgeAccumX += overRight;
+        else if (overLeft > 0f) mEdgeAccumX -= overLeft;
+        else mEdgeAccumX = 0f;
+        if (overDown > 0f) mEdgeAccumY += overDown;
+        else if (overUp > 0f) mEdgeAccumY -= overUp;
+        else mEdgeAccumY = 0f;
+
+        long now = SystemClock.uptimeMillis();
+        if (now - mLastEdgeScrollMs < EDGE_SCROLL_COOLDOWN_MS) {
+            return;
+        }
+        int key = 0;
+        if (mEdgeAccumY >= EDGE_SCROLL_THRESHOLD_PX) key = KeyEvent.KEYCODE_DPAD_DOWN;
+        else if (mEdgeAccumY <= -EDGE_SCROLL_THRESHOLD_PX) key = KeyEvent.KEYCODE_DPAD_UP;
+        else if (mEdgeAccumX >= EDGE_SCROLL_THRESHOLD_PX) key = KeyEvent.KEYCODE_DPAD_RIGHT;
+        else if (mEdgeAccumX <= -EDGE_SCROLL_THRESHOLD_PX) key = KeyEvent.KEYCODE_DPAD_LEFT;
+        if (key != 0) {
+            mLastEdgeScrollMs = now;
+            mEdgeAccumX = 0f;
+            mEdgeAccumY = 0f;
+            log("edge-scroll inject " + keyToString(key));
+            // After the D-pad moves focus, snap the pointer onto the newly
+            // focused control so a tap lands on it (otherwise the pointer is
+            // left at the edge and the tap misses the highlighted item).
+            injectKeyEventAsync(key, () -> mUiHandler.postDelayed(this::snapCursorToFocus, 90L));
+        }
+    }
+
+    /** Move the visible pointer onto whatever view currently has focus. */
+    private void snapCursorToFocus() {
+        try {
+            if (mCursorView == null || mCursorHost == null || mActivity.getWindow() == null) {
+                return;
+            }
+            View focus = mActivity.getWindow().getCurrentFocus();
+            if (focus == null || focus.getWidth() == 0 || focus.getHeight() == 0) {
+                return;
+            }
+            int[] fl = new int[2];
+            int[] hl = new int[2];
+            focus.getLocationOnScreen(fl);
+            mCursorHost.getLocationOnScreen(hl);
+            float cx = fl[0] - hl[0] + focus.getWidth() / 2f;
+            float cy = fl[1] - hl[1] + focus.getHeight() / 2f;
+            float maxX = mHalfWidth > 0 ? mHalfWidth : mCursorHost.getWidth();
+            cx = Math.max(0f, Math.min(maxX, cx));
+            cy = Math.max(0f, Math.min(mCursorHost.getHeight(), cy));
+            mCursorX = cx;
+            mCursorY = cy;
+            mCursorTargetX = cx;
+            mCursorTargetY = cy;
+            positionCursor();
+            showCursorAndScheduleHide();
+            log("snap cursor to focus " + focus.getClass().getSimpleName() + " at " + cx + "," + cy);
+        } catch (Throwable ignored) {
+        }
     }
 
     /** Start the per-frame easing loop if it isn't already running. */
@@ -1085,6 +1688,8 @@ public class RayNeoInputInterceptor {
 
                 float decorX = cx;
                 float decorY = cy;
+                float screenX = cx;
+                float screenY = cy;
                 if (mCursorHost != null) {
                     int[] hostLoc = new int[2];
                     int[] decorLoc = new int[2];
@@ -1092,19 +1697,64 @@ public class RayNeoInputInterceptor {
                     decor.getLocationOnScreen(decorLoc);
                     decorX = hostLoc[0] - decorLoc[0] + cx;
                     decorY = hostLoc[1] - decorLoc[1] + cy;
+                    screenX = hostLoc[0] + cx;
+                    screenY = hostLoc[1] + cy;
                 }
 
+                PlayerActionBridge bridge = sPlayerBridge;
                 View target = findClickableAt(decor, decorX, decorY);
-                if (target != null) {
+
+                // 1. Tap on the progress bar itself -> seek.
+                if (target != null && isSeekBarTarget(target)) {
+                    if (bridge != null && bridge.seekToScreenX(screenX, screenY)) {
+                        android.util.Log.d(TAG, "clickAtCursor seekbar seek at " + screenX + "," + screenY);
+                    }
+                    return;
+                }
+
+                // 2. A labelled control button (Play, CC, Settings, ...) wins over
+                // everything else. These are clickable views WITH a content
+                // description; the video surface and bare progress track are not,
+                // so they fall through. This MUST come before the coordinate seek
+                // below, whose vertical zone can overlap the control rows.
+                if (target != null && target.getContentDescription() != null
+                        && target.getContentDescription().length() > 0) {
                     if (target.performClick()) {
                         android.util.Log.d(TAG, "clickAtCursor performClick target="
-                                + target.getClass().getSimpleName() + " at " + decorX + "," + decorY);
+                                + target.getClass().getSimpleName()
+                                + "[" + target.getContentDescription() + "] at " + decorX + "," + decorY);
+                        return;
+                    }
+                    // Play/Pause sometimes ignores performClick -> media key.
+                    android.util.Log.d(TAG, "clickAtCursor control via media key: " + target.getContentDescription());
+                    injectKeyEventAsync(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE);
+                    return;
+                }
+
+                // 3. Tap on the timeline area where the track isn't the clickable
+                // target -> seek by coordinate (tight vertical zone).
+                if (bridge != null && bridge.seekToScreenX(screenX, screenY)) {
+                    android.util.Log.d(TAG, "clickAtCursor seek handled at screen " + screenX + "," + screenY);
+                    return;
+                }
+
+                // 4. A suggestion thumbnail -> focus it and press DPAD_CENTER so
+                // leanback fires onItemClicked -> onSuggestionItemClicked, which
+                // OPENS and AUTOPLAYS the video. Grid cards are individually
+                // focusable, so center hits the right item.
+                if (bridge != null && bridge.isInSuggestions(screenX, screenY)) {
+                    View card = findFocusableAt(decor, decorX, decorY);
+                    if (card != null) {
+                        android.util.Log.d(TAG, "clickAtCursor open suggestion target="
+                                + card.getClass().getSimpleName() + " at " + decorX + "," + decorY);
+                        clickFocusableAt(card);
                         return;
                     }
                 }
 
-                dispatchMouseClick(decor, decorX, decorY);
-                android.util.Log.d(TAG, "clickAtCursor fallback mouse at " + decorX + "," + decorY);
+                // 5. Video surface -> toggle play via the media key.
+                android.util.Log.d(TAG, "clickAtCursor play/pause toggle at " + decorX + "," + decorY);
+                injectKeyEventAsync(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE);
             } catch (Throwable e) {
                 android.util.Log.e(TAG, "clickAtCursor failed: " + e.getMessage());
             }
@@ -1141,6 +1791,121 @@ public class RayNeoInputInterceptor {
         return null;
     }
 
+    private boolean isSeekBarTarget(View target) {
+        View current = target;
+        while (current != null) {
+            if (current.getId() == R.id.playback_progress) {
+                return true;
+            }
+
+            ViewParent parent = current.getParent();
+            current = parent instanceof View ? (View) parent : null;
+        }
+
+        return false;
+    }
+
+    private boolean isBackgroundClickTarget(View target, View decor) {
+        if (target == null || decor == null) {
+            return false;
+        }
+
+        int decorArea = decor.getWidth() * decor.getHeight();
+        int targetArea = target.getWidth() * target.getHeight();
+        return decorArea > 0 && targetArea > decorArea * 0.35f;
+    }
+
+    private boolean isPlayPauseTarget(View target) {
+        View current = target;
+        while (current != null) {
+            CharSequence desc = current.getContentDescription();
+            if (desc != null) {
+                String text = desc.toString().toLowerCase(java.util.Locale.US);
+                if (text.contains("play") || text.contains("pause")) {
+                    return true;
+                }
+            }
+
+            ViewParent parent = current.getParent();
+            current = parent instanceof View ? (View) parent : null;
+        }
+
+        return false;
+    }
+
+    /** Deepest VISIBLE, focusable view containing the point (cursor excluded). */
+    private View findFocusableAt(View view, float x, float y) {
+        if (view == null || (view != mCursorView && view.getVisibility() != View.VISIBLE)) {
+            return null;
+        }
+        if (view instanceof android.view.ViewGroup) {
+            android.view.ViewGroup group = (android.view.ViewGroup) view;
+            for (int i = group.getChildCount() - 1; i >= 0; i--) {
+                View child = group.getChildAt(i);
+                if (child == mCursorView || child.getVisibility() != View.VISIBLE) {
+                    continue;
+                }
+                float childX = x - child.getX();
+                float childY = y - child.getY();
+                if (childX >= 0 && childY >= 0 && childX < child.getWidth() && childY < child.getHeight()) {
+                    View target = findFocusableAt(child, childX, childY);
+                    if (target != null) {
+                        return target;
+                    }
+                }
+            }
+        }
+        if (view != mCursorView && view.isFocusable() && view.getVisibility() == View.VISIBLE) {
+            return view;
+        }
+        return null;
+    }
+
+    /**
+     * Move focus to the view under the pointer and press DPAD_CENTER, like the
+     * remote would. Done off the UI thread so we can leave touch mode (required
+     * for the D-pad key to register) before focusing and sending the key.
+     */
+    private void clickFocusableAt(final View targetView) {
+        sInputExecutor.execute(() -> {
+            if (mActivity.isFinishing() || mActivity.isDestroyed()) {
+                return;
+            }
+            try {
+                android.app.Instrumentation inst = new android.app.Instrumentation();
+                inst.setInTouchMode(false);
+                View decor = mActivity.getWindow() != null ? mActivity.getWindow().getDecorView() : null;
+                for (int i = 0; i < 30 && decor != null && decor.isInTouchMode(); i++) {
+                    try { Thread.sleep(8); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); break; }
+                }
+                final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+                final boolean[] focused = {false};
+                mActivity.runOnUiThread(() -> {
+                    try {
+                        focused[0] = targetView.requestFocus();
+                        if (!focused[0]) {
+                            focused[0] = targetView.requestFocusFromTouch();
+                        }
+                    } finally {
+                        latch.countDown();
+                    }
+                });
+                try { latch.await(220, java.util.concurrent.TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
+                log("clickFocusableAt focused=" + focused[0]
+                        + " view=" + targetView.getClass().getSimpleName());
+                // Exactly ONE center press — sending ENTER too would toggle the
+                // Play button twice (play then pause).
+                long now = SystemClock.uptimeMillis();
+                inst.sendKeySync(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_CENTER,
+                        0, 0, -1, 0, 0, android.view.InputDevice.SOURCE_KEYBOARD));
+                inst.sendKeySync(new KeyEvent(now, now + 10, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_CENTER,
+                        0, 0, -1, 0, 0, android.view.InputDevice.SOURCE_KEYBOARD));
+            } catch (Throwable e) {
+                android.util.Log.e(TAG, "clickFocusableAt failed: " + e.getMessage());
+            }
+        });
+    }
+
     private void dispatchMouseClick(View decor, float x, float y) {
         long now = SystemClock.uptimeMillis();
         MotionEvent down = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, y, 0);
@@ -1165,8 +1930,29 @@ public class RayNeoInputInterceptor {
             return;
         }
 
+        // Keep the pointer hidden while dim caption mode is up.
+        PlayerActionBridge bridge = sPlayerBridge;
+        if (bridge != null && bridge.isDimActive()) {
+            mUiHandler.removeCallbacks(mHideCursorRunnable);
+            mCursorView.setVisibility(View.GONE);
+            return;
+        }
+
+        mLastCursorActivityMs = SystemClock.uptimeMillis();
         mCursorView.setVisibility(View.VISIBLE);
         mUiHandler.removeCallbacks(mHideCursorRunnable);
         mUiHandler.postDelayed(mHideCursorRunnable, CURSOR_AUTO_HIDE_MS);
+        notifyPlayerControlInteraction();
+    }
+
+    /** Immediately hide the pointer when dim mode turns on (push from player). */
+    void applyDimCursor(final boolean dimActive) {
+        mActivity.runOnUiThread(() -> {
+            if (mCursorView == null) return;
+            if (dimActive) {
+                mUiHandler.removeCallbacks(mHideCursorRunnable);
+                mCursorView.setVisibility(View.GONE);
+            }
+        });
     }
 }

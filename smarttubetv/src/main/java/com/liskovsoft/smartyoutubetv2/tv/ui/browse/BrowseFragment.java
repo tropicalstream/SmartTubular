@@ -147,7 +147,7 @@ public class BrowseFragment extends BrowseSupportFragment implements BrowseView 
                 }
         );
 
-        setOnSearchClickedListener(view -> SearchPresenter.instance(getContext()).startSearch(null));
+        setOnSearchClickedListener(view -> SearchPresenter.instance(getContext()).startVoice());
     }
 
     private void setupFragmentFactory() {

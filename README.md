@@ -1,6 +1,15 @@
-# SmartTube - RayNeo X3 Pro Edition 
+# SmartTubular — RayNeo X3 Pro Edition
 > [!CAUTION]
 > **Community Fork Disclaimer:** This is an unofficial community fork of SmartTube specifically optimized for the **RayNeo X3 Pro** AR glasses. It is **not** an official release from the original SmartTube developer or RayNeo. Use at your own risk.
+
+## Credits & License
+
+**SmartTubular** by **Mars / tropicalstream** is released under the MIT License (see [`LICENSE`](./LICENSE)). It builds on:
+
+- **[SmartTube](https://github.com/yuliskov/SmartTube)** by yuliskov — the original Android TV media client (MIT).
+- **[SmartTube – RayNeo X3 Pro Edition](https://github.com/oliverfederico/SmartTube-RayNeo-X3-Pro)** by Oliver Federico — the X3 Pro port (MIT).
+
+SmartTubular adds RayNeo temple-trackpad UX: a mouse pointer with tap-to-seek, swipe-up dim caption mode, swipe left/right to skip videos, and tuned trackpad navigation. Full lineage and third-party notices are in [`CREDITS.md`](./CREDITS.md).
 
 # SmartTube
   

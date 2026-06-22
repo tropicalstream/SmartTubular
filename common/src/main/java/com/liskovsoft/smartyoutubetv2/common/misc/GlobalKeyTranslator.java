@@ -50,7 +50,7 @@ public class GlobalKeyTranslator extends KeyTranslator {
     }
 
     private void addSearchAction() {
-        Runnable searchAction = () -> getSearchPresenter().startSearch(null);
+        Runnable searchAction = () -> getSearchPresenter().startVoice();
 
         Map<Integer, Runnable> actionMapping = getActionMapping();
 
