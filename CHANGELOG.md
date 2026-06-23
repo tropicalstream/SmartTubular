@@ -4,6 +4,34 @@ SmartTubular is a RayNeo X3 Pro fork of SmartTube. This changelog covers the
 RayNeo-specific additions on top of upstream SmartTube (base version 31.45).
 See [`CREDITS.md`](./CREDITS.md) for project lineage and licensing.
 
+## [0.4-beta] — Search reliability fix (EXPERIMENTAL)
+
+> ⚠️ **Experimental.** Builds on 0.3-geminisearch (Gemini voice search). Still
+> needs a free Gemini API key. Use the stable 0.2 release if you want something
+> settled.
+
+### Fixed
+- **Intermittent "Can't load content" / empty search results.** Searches (voice
+  or typed) would sometimes return nothing and show the sad-cloud screen, then
+  work after a few retries with the same term. Root cause was a stale YouTube
+  data layer: the fork's `MediaServiceCore` predated upstream SmartTube's
+  poToken / innertube / search fixes (shipped upstream as "Empty search results
+  fix"). Bumped `MediaServiceCore` to upstream master so those fixes are
+  included. Search now loads reliably on the first try.
+
+### Changed
+- **Default Gemini model is now `gemini-2.5-flash`** (recovers fastest from the
+  free-tier "high demand" 503s), with automatic fallback through
+  `gemini-2.0-flash` → `gemini-2.5-flash-lite` → `gemini-2.0-flash-lite` and
+  exponential backoff. Still overridable over adb.
+
+### Notes
+- Only the YouTube data layer changed; the RayNeo voice/navigation features from
+  0.3 are unchanged.
+- The data-layer bump required a one-line compatibility patch in
+  `MediaServiceCore` (prefs API), carried in the tropicalstream MediaServiceCore
+  fork the submodule now points at — see `RELEASE_NOTES_0.4.md`.
+
 ## [0.3-geminisearch] — Gemini voice search (EXPERIMENTAL)
 
 > ⚠️ **Experimental branch.** This build adds cloud voice search and reworks the
