@@ -1,0 +1,35 @@
+# ============================================================================
+#  SmartTubular — set the Gemini voice-search API key (over adb)
+# ============================================================================
+#
+#  Voice search uses Google's free Gemini API (the glasses' own speech
+#  recognizer doesn't work for third-party apps). Typing a key on the glasses
+#  isn't practical, and Android 14 blocks pushing files into the app's folder,
+#  so the key is set with a single adb broadcast instead of a file.
+#
+#  STEP 1 — Get a free key:
+#    https://aistudio.google.com/app/apikey  (sign in, "Create API key", copy).
+#    The free tier is plenty and needs no credit card.
+#
+#  STEP 2 — Send it to the app (replace YOUR_GEMINI_API_KEY, one command):
+#
+#    adb shell am broadcast -a org.smarttube.beta.cc.SET_GEMINI_KEY \
+#      -n org.smarttube.beta.cc/com.liskovsoft.smartyoutubetv2.tv.ui.common.keyhandler.GeminiKeyReceiver \
+#      --es key "YOUR_GEMINI_API_KEY"
+#
+#    You'll see a "Gemini key saved" toast on the glasses. The key is stored in
+#    the app's private prefs. Do this once (re-do only if you reinstall or clear
+#    app data).
+#
+#  STEP 3 — Open SmartTubular and tap the magnifying glass to search by voice.
+#
+#  OPTIONAL — change the model the same way (default is gemini-2.5-flash-lite,
+#  which has the highest free-tier rate limit):
+#
+#    adb shell am broadcast -a org.smarttube.beta.cc.SET_GEMINI_KEY \
+#      -n org.smarttube.beta.cc/com.liskovsoft.smartyoutubetv2.tv.ui.common.keyhandler.GeminiKeyReceiver \
+#      --es model "gemini-2.5-flash"
+#
+#  SECURITY: the key only lives in app-private storage and your shell history.
+#  If it leaks, rotate it at the aistudio link above and re-run STEP 2.
+# ============================================================================

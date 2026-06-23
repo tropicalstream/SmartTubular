@@ -4,6 +4,19 @@ Status: **UNRESOLVED.** On-device voice search does not work. This document
 captures everything tried, the root cause, and the recommended path so a fresh
 session can continue without re-deriving it.
 
+Latest update:
+- The in-app mic now uses `GeminiVoiceSearch` as the intended replacement path.
+  `SearchTagsFragmentBase.startRayNeoSpeechRecognizer()` immediately routes to
+  `GeminiVoiceSearch.start(activity)`.
+- The left mic orb on the search results screen was still able to fall through
+  to the search bar's existing-text submit behavior. Fix applied in
+  `SearchSupportFragment`: `mSpeechOrbView.setOnOrbClickedListener(...)` now
+  calls `mSpeechRecognitionCallback.recognizeSpeech()` directly, so clicking the
+  mic should start a fresh Gemini recording instead of resubmitting toolbar text.
+- `SearchTagsFragmentBase` now keeps instant voice disabled. The mic should start
+  only on explicit search-orb/mic/text-field click paths handled by
+  `RayNeoInputInterceptor` or the search screen's speech-orb listener.
+
 ## TL;DR
 
 - The RayNeo X3 Pro exposes **no usable speech recognizer to third-party apps.**

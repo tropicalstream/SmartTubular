@@ -72,7 +72,12 @@ public class RayNeoInputInterceptor {
         boolean isInSuggestions(float screenX, float screenY);
         /** Close the player deterministically (used by double-tap to exit). */
         void exitPlayer();
+        /** True when the related-videos gallery below the player is showing. */
+        boolean isSuggestionsShown();
+        /** Reveal the related-videos gallery below the player. */
+        void showSuggestions();
     }
+
     private static volatile PlayerActionBridge sPlayerBridge;
     private static volatile RayNeoInputInterceptor sActiveCursorInstance;
     public static void setPlayerBridge(PlayerActionBridge bridge) { sPlayerBridge = bridge; }
@@ -83,6 +88,21 @@ public class RayNeoInputInterceptor {
     public static void onDimModeChanged(boolean dimActive) {
         RayNeoInputInterceptor inst = sActiveCursorInstance;
         if (inst != null) inst.applyDimCursor(dimActive);
+    }
+
+    /**
+     * Pointer is the active model only while the player controls/video have
+     * focus. Once the related-videos gallery is showing (scrolled below the
+     * controls), fall back to plain D-pad scrolling like the home screen so each
+     * swipe moves one item — no cursor. The reveal still works because at the
+     * controls (row 0) this is true, so the edge-scroll runs.
+     */
+    private boolean cursorActive() {
+        if (!mCursorMode) {
+            return false;
+        }
+        PlayerActionBridge bridge = sPlayerBridge;
+        return !(bridge != null && bridge.isSuggestionsShown());
     }
 
     // ===== Cursor calibration (temporary tuning aid) =====
@@ -125,11 +145,14 @@ public class RayNeoInputInterceptor {
     private static final float CURSOR_SMOOTHING = 0.35f;
     private static final float CLICK_CANCEL_MOVE_PX = 18f;
     private static final long CURSOR_AUTO_HIDE_MS = 3_000L;
+    private static final float SUGGESTIONS_REVEAL_BOTTOM_ZONE_PX = 28f;
     // Edge-scroll: pushing the pointer past a screen edge drives the app's
     // built-in D-pad navigation, so off-screen content (related videos /
     // chapters below, side menus) stays reachable while in cursor mode.
-    private static final float EDGE_SCROLL_THRESHOLD_PX = 90f;
-    private static final long EDGE_SCROLL_COOLDOWN_MS = 300L;
+    // Lower threshold + cooldown so a sustained downward pull steps through both
+    // control rows to the suggestions quickly (was getting stuck on the controls).
+    private static final float EDGE_SCROLL_THRESHOLD_PX = 50f;
+    private static final long EDGE_SCROLL_COOLDOWN_MS = 170L;
     private float mEdgeAccumX = 0f;
     private float mEdgeAccumY = 0f;
     private long mLastEdgeScrollMs = 0L;
@@ -190,8 +213,12 @@ public class RayNeoInputInterceptor {
         try {
             com.liskovsoft.smartyoutubetv2.common.prefs.SearchData sd =
                     com.liskovsoft.smartyoutubetv2.common.prefs.SearchData.instance(activity);
+            // Voice is handled by GeminiVoiceSearch (record + Gemini). Use the
+            // GOTEV recognizer type so the search bar's mic click routes through
+            // our callback (which calls Gemini), and disable instant voice so the
+            // broken on-device recognizer never auto-fires.
             sd.setSpeechRecognizerType(com.liskovsoft.smartyoutubetv2.common.prefs.SearchData.SPEECH_RECOGNIZER_GOTEV);
-            sd.setInstantVoiceSearchEnabled(true);
+            sd.setInstantVoiceSearchEnabled(false);
         } catch (Throwable e) {
             android.util.Log.e(TAG, "voice-first setup failed: " + e.getMessage());
         }
@@ -322,7 +349,7 @@ public class RayNeoInputInterceptor {
                     return true;
                 }
 
-                if (mCursorMode) {
+                if (cursorActive()) {
                     if (mSuppressClickThisGesture) {
                         android.util.Log.d(TAG, "onTPClick suppressed after cursor swipe");
                         return true;
@@ -363,7 +390,7 @@ public class RayNeoInputInterceptor {
             public boolean onTPSlideForward(FlingArgs flingArgs) {
                 log("callback onTPSlideForward injectedThisSwipe=" + mInjectedContinuousThisSwipe
                         + " focus=" + describeFocus());
-                if (mCursorMode) {
+                if (cursorActive()) {
                     // Only skip videos while dim caption mode is up; with the
                     // video visible a right swipe does nothing (no accidental skip).
                     PlayerActionBridge b = sPlayerBridge;
@@ -383,7 +410,7 @@ public class RayNeoInputInterceptor {
             public boolean onTPSlideBackward(FlingArgs flingArgs) {
                 log("callback onTPSlideBackward injectedThisSwipe=" + mInjectedContinuousThisSwipe
                         + " focus=" + describeFocus());
-                if (mCursorMode) {
+                if (cursorActive()) {
                     // Only skip videos while dim caption mode is up.
                     PlayerActionBridge b = sPlayerBridge;
                     if (b != null && b.isDimActive()) {
@@ -402,7 +429,7 @@ public class RayNeoInputInterceptor {
             public boolean onTPSlideUpwards(FlingArgs flingArgs) {
                 log("callback onTPSlideUpwards injectedThisSwipe=" + mInjectedContinuousThisSwipe
                         + " focus=" + describeFocus());
-                if (mCursorMode) return true;
+                if (cursorActive()) return true;
                 if (!mInjectedContinuousThisSwipe) {
                     mInjectedContinuousThisSwipe = injectSwipeKeyEvent(KeyEvent.KEYCODE_DPAD_UP);
                 }
@@ -413,7 +440,14 @@ public class RayNeoInputInterceptor {
             public boolean onTPSlideDownwards(FlingArgs flingArgs) {
                 log("callback onTPSlideDownwards injectedThisSwipe=" + mInjectedContinuousThisSwipe
                         + " focus=" + describeFocus());
-                if (mCursorMode) return true;
+                PlayerActionBridge bridge = sPlayerBridge;
+                if (cursorActive() && bridge != null && isCursorAtBottomRevealEdge()) {
+                    log("down swipe at bottom edge -> show suggestions");
+                    bridge.showSuggestions();
+                    mSuppressClickThisGesture = true;
+                    return true;
+                }
+                if (cursorActive()) return true;
                 if (!mInjectedContinuousThisSwipe) {
                     mInjectedContinuousThisSwipe = injectSwipeKeyEvent(KeyEvent.KEYCODE_DPAD_DOWN);
                 }
@@ -427,7 +461,7 @@ public class RayNeoInputInterceptor {
                         + " longClick=" + longClick
                         + " injectedThisSwipe=" + mInjectedContinuousThisSwipe
                         + " cursorMode=" + mCursorMode);
-                if (mCursorMode) {
+                if (cursorActive()) {
                     moveCursorContinuous(delta, vertical);
                     return true;
                 }
@@ -545,6 +579,19 @@ public class RayNeoInputInterceptor {
         return false;
     }
 
+    /** True if the view (or an ancestor) has the given id. */
+    private boolean isInsideViewId(View v, int id) {
+        View cur = v;
+        while (cur != null) {
+            if (cur.getId() == id) {
+                return true;
+            }
+            ViewParent p = cur.getParent();
+            cur = (p instanceof View) ? (View) p : null;
+        }
+        return false;
+    }
+
     private View findTitleSearchOrb() {
         if (mActivity.getWindow() == null) {
             return null;
@@ -561,7 +608,7 @@ public class RayNeoInputInterceptor {
         }
 
         boolean latched = SystemClock.uptimeMillis() < mSearchOrbFocusUntilMs;
-        boolean active = isSearchOrb(target)
+        boolean active = isDescendantOf(target, orb)
                 || latched
                 || orb.isFocused()
                 || orb.hasFocus()
@@ -582,6 +629,18 @@ public class RayNeoInputInterceptor {
         }
 
         return active;
+    }
+
+    private boolean isDescendantOf(View child, View ancestor) {
+        View cur = child;
+        while (cur != null) {
+            if (cur == ancestor) {
+                return true;
+            }
+            ViewParent parent = cur.getParent();
+            cur = parent instanceof View ? (View) parent : null;
+        }
+        return false;
     }
 
     private void rememberTitleSearchOrbFocus(String reason) {
@@ -620,40 +679,49 @@ public class RayNeoInputInterceptor {
     private void injectClick() {
         mActivity.runOnUiThread(() -> {
             try {
-                // Click the view that was focused when the tap STARTED (captured
-                // at ACTION_DOWN, before touch mode could shuffle focus to the
-                // content rows). This keeps the search orb / header buttons
-                // activating their own action instead of a video below them.
-                final View target = mDownFocusView != null ? mDownFocusView
+                final View focus = mDownFocusView != null ? mDownFocusView
                         : (mActivity.getWindow() != null ? mActivity.getWindow().getCurrentFocus() : null);
+                // Cursor clicks must hit-test by pointer position first. Focus
+                // can remain on the text/results while the pointer is visibly on
+                // the mic, which was causing old query submission.
+                final View hit = findClickableAtCursor();
+                final View target = hit != null ? hit : focus;
+                android.util.Log.d(TAG, "injectClick target hit=" + describeViewForLog(hit)
+                        + " focus=" + describeViewForLog(focus)
+                        + " chosen=" + describeViewForLog(target)
+                        + " cursor=" + mClickX + "," + mClickY);
 
-                // The leanback search orb's own activation misbehaves on this
-                // device (even in stock SmartTube it focuses/plays a video below
-                // instead of opening search), so when the orb is the target we
-                // launch the real search screen (with mic) directly.
-                if (isTitleSearchOrbActive(target)) {
-                    android.util.Log.d(TAG, "injectClick -> open Search voice screen directly");
-                    com.liskovsoft.smartyoutubetv2.common.app.presenters.SearchPresenter
-                            .instance(mActivity).startVoice();
+                // On the search results screen, the right magnifying-glass orb is
+                // the "record a new Gemini search" control. Detect it by BOTH the
+                // cursor (player) and the focused view (search screen has no
+                // cursor, so the cursor check alone never fired there).
+                if (isCursorInsideViewId(R.id.lb_search_bar_search_orb)
+                        || isInsideViewId(target, R.id.lb_search_bar_search_orb)) {
+                    android.util.Log.d(TAG, "injectClick -> Gemini voice search (search magnifying glass)");
+                    GeminiVoiceSearch.start(mActivity);
                     return;
                 }
 
-                // Mic / speech orb -> start voice recognition directly (its own
-                // activation misbehaves the same way the search orb's does).
+                // Legacy fallback for layouts that still expose a speech orb.
                 if (isSpeechOrb(target)) {
-                    android.util.Log.d(TAG, "injectClick -> startVoice (speech orb)");
-                    com.liskovsoft.smartyoutubetv2.common.app.presenters.SearchPresenter
-                            .instance(mActivity).startVoice();
+                    android.util.Log.d(TAG, "injectClick -> Gemini voice search (speech orb)");
+                    GeminiVoiceSearch.start(mActivity);
                     return;
                 }
 
-                // Search text field -> NO system keyboard on the glasses (it only
-                // renders in one lens and triggers a contacts prompt). Re-start
-                // voice instead.
+                // The home/title search orb's own activation misbehaves on this
+                // device. Keep this limited to the title orb and show Gemini
+                // results on the Home screen instead of launching SearchView.
+                if (isTitleSearchOrbActive(target)) {
+                    android.util.Log.d(TAG, "injectClick -> Gemini voice search on Home (title search orb)");
+                    GeminiVoiceSearch.startOnHome(mActivity);
+                    return;
+                }
+
+                // Search text field is display-only on the glasses. Voice search
+                // is started by the left microphone orb, not by tapping the text.
                 if (target instanceof android.widget.EditText) {
-                    android.util.Log.d(TAG, "injectClick -> startVoice (search field, no keyboard)");
-                    com.liskovsoft.smartyoutubetv2.common.app.presenters.SearchPresenter
-                            .instance(mActivity).startVoice();
+                    android.util.Log.d(TAG, "injectClick ignored search text display");
                     return;
                 }
 
@@ -676,6 +744,91 @@ public class RayNeoInputInterceptor {
                 injectKeyEventAsync(KeyEvent.KEYCODE_DPAD_CENTER, null, true);
             }
         });
+    }
+
+    private float[] getCursorDecorPoint() {
+        if (mActivity.getWindow() == null) {
+            return null;
+        }
+
+        View decor = mActivity.getWindow().getDecorView();
+        if (decor == null) {
+            return null;
+        }
+
+        float cx = mClickX >= 0f ? mClickX : mCursorX;
+        float cy = mClickY >= 0f ? mClickY : mCursorY;
+        if (cx < 0f || cy < 0f) {
+            return null;
+        }
+
+        if (mHalfWidth > 0) {
+            cx = Math.max(0f, Math.min(mHalfWidth - 2f, cx));
+        }
+
+        float decorX = cx;
+        float decorY = cy;
+        if (mCursorHost != null) {
+            int[] hostLoc = new int[2];
+            int[] decorLoc = new int[2];
+            mCursorHost.getLocationOnScreen(hostLoc);
+            decor.getLocationOnScreen(decorLoc);
+            decorX = hostLoc[0] - decorLoc[0] + cx;
+            decorY = hostLoc[1] - decorLoc[1] + cy;
+        }
+
+        return new float[] {decorX, decorY};
+    }
+
+    private boolean isCursorInsideViewId(int viewId) {
+        if (mActivity.getWindow() == null) {
+            return false;
+        }
+
+        View decor = mActivity.getWindow().getDecorView();
+        View target = decor != null ? decor.findViewById(viewId) : null;
+        float[] point = getCursorDecorPoint();
+        if (target == null || !target.isShown() || point == null) {
+            return false;
+        }
+
+        Rect rect = new Rect();
+        target.getHitRect(rect);
+        ViewParent parent = target.getParent();
+        while (parent instanceof View && parent != decor) {
+            View parentView = (View) parent;
+            rect.offset((int) parentView.getX(), (int) parentView.getY());
+            parent = parentView.getParent();
+        }
+
+        boolean inside = rect.contains(Math.round(point[0]), Math.round(point[1]));
+        if (inside) {
+            android.util.Log.d(TAG, "cursor inside "
+                    + describeViewForLog(target)
+                    + " rect=" + rect
+                    + " point=" + point[0] + "," + point[1]);
+        }
+        return inside;
+    }
+
+    private View findClickableAtCursor() {
+        if (mActivity.getWindow() == null) {
+            return null;
+        }
+
+        View decor = mActivity.getWindow().getDecorView();
+        if (decor == null) {
+            return null;
+        }
+
+        float[] point = getCursorDecorPoint();
+        if (point == null) {
+            return null;
+        }
+
+        float decorX = point[0];
+        float decorY = point[1];
+        return findClickableAt(decor, decorX, decorY);
     }
 
     private void injectKeyEventAsync(int keyCode) {
@@ -1585,6 +1738,23 @@ public class RayNeoInputInterceptor {
         }
     }
 
+    private boolean isCursorAtBottomRevealEdge() {
+        View host = mCursorHost;
+        if (host == null || host.getHeight() <= 0) {
+            return false;
+        }
+
+        float bottom = host.getHeight();
+        float cursorY = Math.max(mCursorY, mCursorTargetY);
+        boolean atBottom = cursorY >= bottom - SUGGESTIONS_REVEAL_BOTTOM_ZONE_PX;
+        if (!atBottom) {
+            log("down swipe ignored for suggestions; cursorY=" + cursorY
+                    + " bottom=" + bottom
+                    + " zone=" + SUGGESTIONS_REVEAL_BOTTOM_ZONE_PX);
+        }
+        return atBottom;
+    }
+
     /**
      * Accumulate how far the pointer is being pushed past each edge and, once a
      * direction passes the threshold, inject a single D-pad key so the app's
@@ -1930,9 +2100,10 @@ public class RayNeoInputInterceptor {
             return;
         }
 
-        // Keep the pointer hidden while dim caption mode is up.
+        // Keep the pointer hidden while dim caption mode is up, or while the
+        // related-videos gallery is showing (there we're in plain D-pad mode).
         PlayerActionBridge bridge = sPlayerBridge;
-        if (bridge != null && bridge.isDimActive()) {
+        if (bridge != null && (bridge.isDimActive() || bridge.isSuggestionsShown())) {
             mUiHandler.removeCallbacks(mHideCursorRunnable);
             mCursorView.setVisibility(View.GONE);
             return;

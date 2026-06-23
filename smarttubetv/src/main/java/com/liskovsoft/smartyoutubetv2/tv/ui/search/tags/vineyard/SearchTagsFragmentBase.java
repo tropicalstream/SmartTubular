@@ -173,7 +173,7 @@ public abstract class SearchTagsFragmentBase extends SearchSupportFragment
         // You should avoid using it till there be a solution.
         SearchData searchData = getSearchData();
         searchData.setSpeechRecognizerType(SearchData.SPEECH_RECOGNIZER_GOTEV);
-        searchData.setInstantVoiceSearchEnabled(true);
+        searchData.setInstantVoiceSearchEnabled(false);
         searchData.setKeyboardAutoShowEnabled(false);
 
         switch (searchData.getSpeechRecognizerType()) {
@@ -356,6 +356,17 @@ public abstract class SearchTagsFragmentBase extends SearchSupportFragment
     }
 
     private void startRayNeoSpeechRecognizer() {
+        // The RayNeo on-device ASR is unusable for third-party apps (see
+        // docs/VOICE_SEARCH_HANDOFF.md). The search bar's mic click lands here
+        // via the SpeechRecognitionCallback — route it to Gemini voice search so
+        // tapping the mic on the results screen starts a fresh voice search.
+        if (Boolean.TRUE) {
+            voiceLog("mic -> Gemini voice search");
+            if (getActivity() != null) {
+                com.liskovsoft.smartyoutubetv2.tv.ui.common.keyhandler.GeminiVoiceSearch.start(getActivity());
+            }
+            return;
+        }
         try {
             if (isRayNeoVoiceSearchActive()) {
                 voiceLog("start ignored; voice search already active");

@@ -13,6 +13,7 @@ import android.text.TextUtils;
 import android.text.TextWatcher;
 import android.util.Log;
 import android.view.LayoutInflater;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.View.OnFocusChangeListener;
 import android.view.ViewGroup;
@@ -322,8 +323,7 @@ public class SearchSupportFragment extends Fragment {
 
             @Override
             public void onSearchQuerySubmit(String query) {
-                if (DEBUG) Log.v(TAG, String.format("onSearchQuerySubmit %s", query));
-                submitQuery(query);
+                Log.i("RayNeoVoiceSearch", "toolbar submit ignored query=" + query);
             }
 
             @Override
@@ -340,6 +340,8 @@ public class SearchSupportFragment extends Fragment {
         // MOD: inner search bar views for improved focus handling
 
         mSearchTextEditor = mSearchBar.findViewById(R.id.lb_search_text_editor);
+        mSearchTextEditor.setOnClickListener(v ->
+                Log.i("RayNeoVoiceSearch", "search text display click ignored"));
         mSearchTextEditor.setSelectAllOnFocus(true); // Select all on focus (easy clear previous search)
         mSearchTextEditor.setOnFocusChangeListener((v, focused) -> {
             Log.d(TAG, "on search field focused");
@@ -385,7 +387,10 @@ public class SearchSupportFragment extends Fragment {
                 Helpers.hideKeyboard(getContext(), v);
             }
         });
-        mSearchOrbView.setOnOrbClickedListener(v -> submitQuery(getSearchBarText()));
+        mSearchOrbView.setOnOrbClickedListener(v -> {
+            Log.i("RayNeoVoiceSearch", "search orb click -> Gemini voice search");
+            com.liskovsoft.smartyoutubetv2.tv.ui.common.keyhandler.GeminiVoiceSearch.start(requireActivity());
+        });
 
         // MOD: search settings button
         mSearchSettingsOrbView = mSearchBar.findViewById(com.liskovsoft.smartyoutubetv2.tv.R.id.search_settings_orb);
@@ -400,6 +405,16 @@ public class SearchSupportFragment extends Fragment {
         mSearchSettingsOrbView.setOnOrbClickedListener(v -> onSearchSettingsClicked());
 
         mSpeechOrbView = mSearchBar.findViewById(R.id.lb_search_bar_speech_orb);
+        mSpeechOrbView.setVisibility(View.GONE);
+        mSpeechOrbView.setFocusable(false);
+        mSpeechOrbView.setFocusableInTouchMode(false);
+        mSpeechOrbView.setClickable(false);
+        mSpeechOrbView.setOnTouchListener((v, event) -> {
+            return true;
+        });
+        mSpeechOrbView.setOnOrbClickedListener(v -> {
+            Log.i("RayNeoVoiceSearch", "hidden speech orb ignored");
+        });
         OnFocusChangeListener previousListener = mSpeechOrbView.getOnFocusChangeListener();
         mSpeechOrbView.setOnFocusChangeListener((v, focused) -> {
             if (!focused) {
@@ -452,6 +467,14 @@ public class SearchSupportFragment extends Fragment {
             onSetSearchResultProvider();
         }
         return root;
+    }
+
+    private void startVoiceFromSpeechOrb() {
+        if (mSpeechRecognitionCallback != null) {
+            mSpeechRecognitionCallback.recognizeSpeech();
+        } else {
+            startRecognition();
+        }
     }
 
     private void resultsAvailable() {

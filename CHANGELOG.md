@@ -4,6 +4,33 @@ SmartTubular is a RayNeo X3 Pro fork of SmartTube. This changelog covers the
 RayNeo-specific additions on top of upstream SmartTube (base version 31.45).
 See [`CREDITS.md`](./CREDITS.md) for project lineage and licensing.
 
+## [0.3-geminisearch] — Gemini voice search (EXPERIMENTAL)
+
+> ⚠️ **Experimental branch.** This build adds cloud voice search and reworks the
+> player/search navigation. It needs a (free) Gemini API key and is less tested
+> than the 0.2 release. Use the stable 0.2 release if you want something settled.
+
+### Added
+- **Voice search via Gemini.** Tapping the magnifying glass / mic records the
+  microphone, transcribes it with Google's free **Gemini API**, and runs the
+  result as a YouTube search — bypassing the RayNeo on-device recognizer, which
+  isn't usable by third-party apps. Works from the home screen and the search
+  screen (mic and magnifying glass).
+- **API key over adb.** No on-device typing: set the key with a single
+  `am broadcast` command (see [`gemini_key.txt.example`](./gemini_key.txt.example)).
+  Stored only in app-private prefs.
+- **Configurable model + resilience.** Defaults to `gemini-2.5-flash-lite`
+  (highest free-tier rate limit), with an automatic retry and a clearer error
+  (e.g. "rate limit — try again") on the occasional "spike in usage". The model
+  is overridable over adb.
+- **Gallery D-pad mode.** Scrolling below the playing video into the related-
+  videos gallery now switches to plain home-screen-style D-pad scrolling with the
+  cursor hidden; the controls above still use the pointer.
+
+### Notes
+- A one-time microphone-permission prompt appears on first voice use.
+- Voice quality/availability depends on the Gemini free tier.
+
 ## [0.2] — Player polish, search, and known voice limitation
 
 ### Added

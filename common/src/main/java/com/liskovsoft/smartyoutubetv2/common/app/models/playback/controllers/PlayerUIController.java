@@ -27,6 +27,7 @@ import com.liskovsoft.smartyoutubetv2.common.app.models.playback.ui.OptionCatego
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.ui.OptionItem;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.ui.UiOptionItem;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.AppDialogPresenter;
+import com.liskovsoft.smartyoutubetv2.common.app.presenters.BrowsePresenter;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.ChannelPresenter;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.SearchPresenter;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.dialogs.menu.VideoMenuPresenter;
@@ -562,8 +563,14 @@ public class PlayerUIController extends BasePlayerController {
     }
 
     private void onSearchClicked() {
-        startTempBackgroundMode(SearchPresenter.class);
-        SearchPresenter.instance(getContext()).startVoice();
+        Video video = getVideo();
+        String title = video != null ? video.getTitle() : null;
+        if (title == null || title.trim().isEmpty()) {
+            return;
+        }
+
+        BrowsePresenter.instance(getContext()).showSearchResultsOnHome(title.trim());
+        getPlayer().finish();
     }
     
     private void onVideoZoom() {

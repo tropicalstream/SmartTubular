@@ -223,6 +223,25 @@ public class PlaybackFragment extends SeekModePlaybackFragment implements Playba
                         }
                     });
                 }
+
+                @Override
+                public boolean isSuggestionsShown() {
+                    try {
+                        return PlaybackFragment.this.isSuggestionsShown();
+                    } catch (Throwable e) {
+                        return false;
+                    }
+                }
+
+                @Override
+                public void showSuggestions() {
+                    mDimHandler.post(() -> {
+                        try {
+                            PlaybackFragment.this.showSuggestions(true);
+                        } catch (Throwable ignored) {
+                        }
+                    });
+                }
             };
 
     /** True if the screen point falls inside the suggestion thumbnail rows. */

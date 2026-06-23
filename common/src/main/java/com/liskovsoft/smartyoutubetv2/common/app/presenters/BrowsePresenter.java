@@ -629,6 +629,25 @@ public class BrowsePresenter extends BasePresenter<BrowseView> implements Sectio
         }
     }
 
+    public boolean showSearchResultsOnHome(String searchText) {
+        if (TextUtils.isEmpty(searchText) || getView() == null) {
+            return false;
+        }
+
+        BrowseSection home = findSectionById(MediaGroup.TYPE_HOME);
+        int homeIndex = findSectionIndex(MediaGroup.TYPE_HOME);
+        if (home == null || homeIndex == -1) {
+            return false;
+        }
+
+        Log.d(TAG, "Show Gemini search results on Home for '%s'", searchText);
+        mCurrentSection = home;
+        mCurrentVideo = null;
+        getView().selectSection(homeIndex, true);
+        updateVideoRows(home, getContentService().getSearchObserve(searchText));
+        return true;
+    }
+
     private void updateRefreshTime() {
         mLastUpdateTimeMs = System.currentTimeMillis();
     }

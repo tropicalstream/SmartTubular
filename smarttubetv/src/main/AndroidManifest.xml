@@ -298,6 +298,16 @@
             android:screenOrientation="unspecified"/>
 
         <!-- END Launchers -->
+
+        <!-- Receives the Gemini voice-search API key over adb (typing it on the
+             glasses isn't practical). Write-only; can be removed after setup. -->
+        <receiver
+            android:name="com.liskovsoft.smartyoutubetv2.tv.ui.common.keyhandler.GeminiKeyReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="${applicationId}.SET_GEMINI_KEY" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>
