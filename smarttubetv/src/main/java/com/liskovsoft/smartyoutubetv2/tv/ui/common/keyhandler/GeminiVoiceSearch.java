@@ -38,9 +38,13 @@ public final class GeminiVoiceSearch {
     private static final String PREFS = "smarttubular_voice";
     private static final String PREF_KEY = "gemini_api_key";
     private static final String PREF_MODEL = "gemini_model";
-    // flash-lite has 2x the free-tier rate limit of flash (30 vs 15 req/min),
-    // which avoids most "spike in usage" rejections. Overridable via the receiver.
-    private static final String DEFAULT_MODEL = "gemini-2.5-flash-lite";
+    // 2.5-flash recovers from "high demand" 503s fastest. If it's overloaded we
+    // fall back through the others below, since a 503 is server-side capacity
+    // (not your quota) and a different model is usually free right now.
+    private static final String DEFAULT_MODEL = "gemini-2.5-flash";
+    private static final String[] FALLBACK_MODELS = {
+        "gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash-lite"
+    };
     private static volatile String sLastError;
 
     private static final int SAMPLE_RATE = 16000;
@@ -100,9 +104,18 @@ public final class GeminiVoiceSearch {
                     return;
                 }
                 UI.post(() -> toast(activity, "Searching…"));
-                String model = getModel(activity);
                 sLastError = null;
-                String text = transcribe(key, model, wav);
+                // Try the chosen model, then fall back to others — a 503 means
+                // that model is overloaded right now, so another usually works
+                // immediately. Short backoff between attempts.
+                String[] models = modelFallbackList(activity);
+                String text = null;
+                for (int i = 0; i < models.length && text == null; i++) {
+                    if (i > 0) {
+                        try { Thread.sleep(500L * i); } catch (InterruptedException ignored) { }
+                    }
+                    text = transcribe(key, models[i], wav);
+                }
                 finish(activity, preferHomeResults, text, text == null
                         ? (sLastError != null ? sLastError : "Couldn't transcribe — try again") : null);
             } catch (Throwable e) {
@@ -304,6 +317,16 @@ public final class GeminiVoiceSearch {
         } catch (Throwable e) {
             return DEFAULT_MODEL;
         }
+    }
+
+    /** The chosen model first, then the fallback models (deduped). */
+    private static String[] modelFallbackList(Context ctx) {
+        java.util.LinkedHashSet<String> set = new java.util.LinkedHashSet<>();
+        set.add(getModel(ctx));
+        for (String m : FALLBACK_MODELS) {
+            set.add(m);
+        }
+        return set.toArray(new String[0]);
     }
 
     /** Override the Gemini model (used by GeminiKeyReceiver, set over adb). */
