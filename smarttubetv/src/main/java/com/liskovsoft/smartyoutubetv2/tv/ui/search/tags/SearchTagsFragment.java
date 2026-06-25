@@ -196,13 +196,12 @@ public class SearchTagsFragment extends SearchTagsFragmentBase {
 
     @Override
     protected void focusOnResults() {
-        if (mSearchData.isFocusOnResultsEnabled() && !TextUtils.isEmpty(mNewQuery)) {
-            super.focusOnResults();
-            if (getRowsSupportFragment() != null) {
-                // Move selection to the videos (second row)
-                getRowsSupportFragment().setSelectedPosition(findResultsIndex());
-            }
-        }
+        // RayNeo: deliberately DON'T pull focus into the result rows when results load. Focus stays
+        // on the search bar, so a tap immediately starts a new voice search (routed in the input
+        // interceptor by detecting that focus is inside the SearchBar), and the user drops into the
+        // results by swiping down (native leanback nav). Moving focus to a result here was what made
+        // the magnifying glass "play the video below"; forcing focus onto the orb instead broke
+        // down-navigation (the orb has no downward focus target). Leaving focus alone fixes both.
     }
 
     /**

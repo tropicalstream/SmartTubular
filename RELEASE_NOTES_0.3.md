@@ -27,7 +27,7 @@ by **Oliver Federico** — thank you. MIT licensed.
    ```
 3. Open SmartTubular and tap the magnifying glass to search by voice.
 
-Full directions: [`gemini_key.txt.example`](./gemini_key.txt.example). A one-time mic
+Full directions: [`gemini_setup.txt.example`](./gemini_setup.txt.example). A one-time mic
 permission prompt appears on first use.
 
 **Install:** `SmartTube_beta_31.45_arm64-v8a.apk` below. Installs alongside the original SmartTube.

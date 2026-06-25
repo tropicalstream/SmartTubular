@@ -4,6 +4,7 @@ import android.annotation.SuppressLint;
 import android.content.Context;
 import com.liskovsoft.mediaserviceinterfaces.ContentService;
 import com.liskovsoft.mediaserviceinterfaces.data.MediaGroup;
+import com.liskovsoft.mediaserviceinterfaces.data.MediaItem;
 import com.liskovsoft.mediaserviceinterfaces.data.SearchOptions;
 import com.liskovsoft.sharedutils.mylogger.Log;
 import com.liskovsoft.sharedutils.rx.RxHelper;
@@ -26,7 +27,10 @@ import com.liskovsoft.smartyoutubetv2.common.utils.AppDialogUtil;
 import io.reactivex.disposables.Disposable;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 public class SearchPresenter extends BasePresenter<SearchView> implements VideoGroupPresenter {
     private static final String TAG = SearchPresenter.class.getSimpleName();
@@ -35,6 +39,10 @@ public class SearchPresenter extends BasePresenter<SearchView> implements VideoG
     private final BrowseProcessorManager mBrowseProcessor;
     private Disposable mScrollAction;
     private Disposable mLoadAction;
+    private static final int MAX_VIDEOS_PER_TITLE = 1;
+    private Disposable mSimilarAction;
+    private String mPendingSimilarTitle;
+    private List<String> mPendingSimilarQueries;
     private String mSearchText;
     private boolean mIsVoice;
     private boolean mStartPlay;
@@ -69,6 +77,17 @@ public class SearchPresenter extends BasePresenter<SearchView> implements VideoG
 
         getView().setTagsProvider(new MediaServiceSearchTagProvider(getSearchData().isSearchHistoryDisabled()));
 
+        // A "similar to X" request opened this view — render the aggregated list instead
+        // of running a normal search (avoids the view-not-ready timing race).
+        if (mPendingSimilarQueries != null) {
+            String title = mPendingSimilarTitle;
+            List<String> queries = mPendingSimilarQueries;
+            mPendingSimilarTitle = null;
+            mPendingSimilarQueries = null;
+            runList(title, queries);
+            return;
+        }
+
         startSearchInt();
     }
 
@@ -89,6 +108,8 @@ public class SearchPresenter extends BasePresenter<SearchView> implements VideoG
         mFeatureOptions = 0;
         mSortingOptions = 0;
         mIsVoice = false;
+        mPendingSimilarTitle = null;
+        mPendingSimilarQueries = null;
     }
 
     @Override
@@ -182,12 +203,180 @@ public class SearchPresenter extends BasePresenter<SearchView> implements VideoG
                 );
     }
 
+    /**
+     * Show an app-built multi-title list (e.g. from Gemini voice discovery / "best of" requests):
+     * search each title and render its full results as its own row, so the screen fills with a
+     * gallery instead of a single sparse row. Each row keeps its real MediaGroup, so the existing
+     * onScrollEnd/continueGroup path loads more videos horizontally as the user scrolls a row.
+     * Opens the search view first if it isn't already showing.
+     */
+    public void displayList(String title, List<String> queries) {
+        if (queries == null || queries.isEmpty()) {
+            return;
+        }
+
+        mSearchText = title;
+
+        if (getView() == null) {
+            // Defer until the view is ready; onViewInitialized() will call runList().
+            mPendingSimilarTitle = title;
+            mPendingSimilarQueries = queries;
+            getViewManager().startView(SearchView.class);
+            return;
+        }
+
+        runList(title, queries);
+    }
+
+    private void runList(String title, List<String> queries) {
+        Log.d(TAG, "Start list search '%s' (%s queries)", title, queries.size());
+
+        disposeActions();
+        getView().showProgressBar(true);
+        getView().clearSearch();
+
+        ContentService contentService = getContentService();
+
+        mSimilarAction = RxHelper.execute(
+                RxHelper.fromCallable(() -> searchAggregated(contentService, queries)),
+                videos -> {
+                    if (getView() == null) {
+                        return;
+                    }
+                    if (videos.isEmpty()) {
+                        // Nothing matched — fall back to a normal search so the user still gets results.
+                        loadSearchResult(title);
+                        return;
+                    }
+                    // One row of unique results (a few top hits per title). Rendering a single group
+                    // avoids the multi-row layout race that collapsed every title into the first row.
+                    VideoGroup group = VideoGroup.from(videos);
+                    group.setTitle(title);
+                    getView().updateSearch(group);
+                    mBrowseProcessor.process(group);
+                    getView().showProgressBar(false);
+                },
+                error -> {
+                    Log.e(TAG, "displayList error: %s", error.getMessage());
+                    if (getView() != null) {
+                        loadSearchResult(title);
+                    }
+                });
+    }
+
+    /**
+     * Search each title (blocking) and collect the top few hits of each into one flat list,
+     * de-duplicated globally by videoId so the same result never appears twice.
+     */
+    private static List<Video> searchAggregated(ContentService contentService, List<String> queries) {
+        List<Video> result = new ArrayList<>();
+        Set<String> seenQuery = new HashSet<>();
+        Set<String> seenVideo = new HashSet<>();
+        Set<String> seenTitle = new HashSet<>();
+        for (String query : queries) {
+            if (query == null || query.trim().isEmpty()) {
+                continue;
+            }
+            String q = query.trim();
+            if (!seenQuery.add(normalizeSearchText(q))) {
+                continue;
+            }
+            try {
+                result.addAll(collectUnique(contentService.getSearch(q), seenVideo, seenTitle, MAX_VIDEOS_PER_TITLE));
+            } catch (Throwable e) {
+                Log.e(TAG, "list search failed for '%s': %s", q, e.getMessage());
+            }
+        }
+        return result;
+    }
+
+    /** Flatten search groups into unique videos, skipping repeated IDs and repeated human titles. */
+    private static List<Video> collectUnique(List<MediaGroup> groups, Set<String> seenVideo, Set<String> seenTitle, int max) {
+        List<Video> result = new ArrayList<>();
+        if (groups == null) {
+            return result;
+        }
+        for (MediaGroup group : groups) {
+            if (group == null || group.getMediaItems() == null) {
+                continue;
+            }
+            for (MediaItem item : group.getMediaItems()) {
+                if (item == null || item.getVideoId() == null) {
+                    continue;
+                }
+                String titleKey = normalizeVideoTitle(item.getTitle());
+                if (titleKey != null && !seenTitle.add(titleKey)) {
+                    Log.d(TAG, "displayList skip repeated title '%s' (%s)", item.getTitle(), item.getVideoId());
+                    continue;
+                }
+                if (!seenVideo.add(item.getVideoId())) {
+                    continue;
+                }
+                result.add(Video.from(item));
+                if (result.size() >= max) {
+                    return result;
+                }
+            }
+        }
+        return result;
+    }
+
+    private static String normalizeVideoTitle(String title) {
+        String raw = title != null ? title.toLowerCase(Locale.US)
+                .replaceAll("\\([^)]*\\)|\\[[^]]*\\]", " ")
+                .trim() : null;
+        if (raw != null) {
+            String[] artistSplit = raw.split("\\s+-\\s+|\\s+–\\s+|\\s+—\\s+|\\s+by\\s+", 2);
+            if (artistSplit.length == 2 && artistSplit[1].trim().length() >= 4) {
+                raw = artistSplit[1].trim();
+            }
+        }
+
+        String normalized = normalizeSearchText(raw);
+        if (normalized == null || normalized.isEmpty()) {
+            return null;
+        }
+
+        normalized = normalized
+                .replaceAll("\\bofficial\\b", " ")
+                .replaceAll("\\blyric(s)?\\b", " ")
+                .replaceAll("\\bvideo\\b", " ")
+                .replaceAll("\\bmusic\\b", " ")
+                .replaceAll("\\baudio\\b", " ")
+                .replaceAll("\\bremaster(ed)?\\b", " ")
+                .replaceAll("\\bhd\\b|\\b4k\\b|\\b8k\\b", " ")
+                .replaceAll("\\bmv\\b|\\bpv\\b", " ")
+                .replaceAll("\\b19\\d\\d\\b|\\b20\\d\\d\\b", " ")
+                .replaceAll("\\b\\d{2}\\b", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+
+        return normalized.length() >= 4 ? normalized : null;
+    }
+
+    private static String normalizeSearchText(String text) {
+        if (text == null) {
+            return null;
+        }
+        return text.toLowerCase(Locale.US)
+                .replaceAll("\\([^)]*\\)|\\[[^]]*\\]", " ")
+                .replaceAll("[^a-z0-9]+", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+    }
+
     private void continueGroup(VideoGroup group) {
         if (RxHelper.isAnyActionRunning(mScrollAction)) {
             return;
         }
 
         if (getView() == null) {
+            return;
+        }
+
+        if (group.getMediaGroup() == null) {
+            // Synthetic app-built row (Gemini list results) — no continuation token to follow.
+            getView().showProgressBar(false);
             return;
         }
 
@@ -285,7 +474,7 @@ public class SearchPresenter extends BasePresenter<SearchView> implements VideoG
     }
 
     public void disposeActions() {
-        RxHelper.disposeActions(mLoadAction, mScrollAction);
+        RxHelper.disposeActions(mLoadAction, mScrollAction, mSimilarAction);
         if (getView() != null) {
             getView().showProgressBar(false);
         }

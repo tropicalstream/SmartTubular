@@ -14,8 +14,10 @@ import com.ffalcon.mercury.android.sdk.touch.CommonTouchCallback;
 import com.ffalcon.mercury.android.sdk.touch.FlingArgs;
 import com.ffalcon.mercury.android.sdk.touch.TouchDispatcher;
 import com.ffalcon.mercury.android.sdk.util.MyTouchUtils;
+import com.liskovsoft.smartyoutubetv2.common.app.presenters.BrowsePresenter;
 import com.liskovsoft.smartyoutubetv2.tv.R;
 
+import androidx.leanback.widget.HorizontalGridView;
 import androidx.leanback.widget.VerticalGridView;
 import androidx.recyclerview.widget.RecyclerView;
 
@@ -137,6 +139,9 @@ public class RayNeoInputInterceptor {
     private int mPendingSwipeKeyCode;
     private float mSwipeStartX;
     private float mSwipeStartY;
+    private float mTouchDownX;
+    private float mTouchDownY;
+    private boolean mTitleSearchLocked = true;
     private int mHalfWidth = 0; // per-eye width (X3 Pro mirrors the left 640px)
     // Lower gain = steadier, slower pointer (user preference). Smoothing eases
     // the displayed cursor toward its target each animation frame so it never
@@ -277,6 +282,8 @@ public class RayNeoInputInterceptor {
                 mPendingSwipeKeyCode = 0;
                 mSwipeStartX = event.getX();
                 mSwipeStartY = event.getY();
+                mTouchDownX = event.getX();
+                mTouchDownY = event.getY();
                 // Snapshot where the pointer is aimed at the START of this
                 // gesture, so a tap clicks there even if the tap jitters it.
                 mClickX = mCursorX;
@@ -287,6 +294,15 @@ public class RayNeoInputInterceptor {
                 // e.g. the search orb opens search instead of a video below it.
                 mDownFocusView = mActivity.getWindow() != null
                         ? mActivity.getWindow().getCurrentFocus() : null;
+                if (isContentFocus(mDownFocusView)) {
+                    if (mTitleSearchLocked) {
+                        android.util.Log.d(TAG, "title search lock cleared: content already focused");
+                    }
+                    mTitleSearchLocked = false;
+                } else if (mTitleSearchLocked && getBrowseTitleSearchSection() != 0) {
+                    requestTitleSearchFocus("touchDownLock");
+                    mDownFocusView = findTitleSearchOrb();
+                }
                 mInjectedContinuousThisSwipe = false;
             }
 
@@ -309,6 +325,7 @@ public class RayNeoInputInterceptor {
                 float gestureDy = event.getY() - mSwipeStartY;
                 final int keyCode = directionKeyFromDisplacement(gestureDx, gestureDy, mPendingSwipeKeyCode);
                 mPendingSwipeKeyCode = 0;
+                updateTitleSearchLockForNavKey(keyCode);
                 log("dispatch pending swipe after " + motionActionToString(event.getActionMasked())
                         + " key=" + keyToString(keyCode)
                         + " dx=" + gestureDx + " dy=" + gestureDy);
@@ -401,6 +418,7 @@ public class RayNeoInputInterceptor {
                     return true;
                 }
                 if (!mInjectedContinuousThisSwipe) {
+                    updateTitleSearchLockForNavKey(KeyEvent.KEYCODE_DPAD_RIGHT);
                     mInjectedContinuousThisSwipe = injectSwipeKeyEvent(KeyEvent.KEYCODE_DPAD_RIGHT);
                 }
                 return true;
@@ -420,6 +438,7 @@ public class RayNeoInputInterceptor {
                     return true;
                 }
                 if (!mInjectedContinuousThisSwipe) {
+                    updateTitleSearchLockForNavKey(KeyEvent.KEYCODE_DPAD_LEFT);
                     mInjectedContinuousThisSwipe = injectSwipeKeyEvent(KeyEvent.KEYCODE_DPAD_LEFT);
                 }
                 return true;
@@ -431,6 +450,7 @@ public class RayNeoInputInterceptor {
                         + " focus=" + describeFocus());
                 if (cursorActive()) return true;
                 if (!mInjectedContinuousThisSwipe) {
+                    updateTitleSearchLockForNavKey(KeyEvent.KEYCODE_DPAD_UP);
                     mInjectedContinuousThisSwipe = injectSwipeKeyEvent(KeyEvent.KEYCODE_DPAD_UP);
                 }
                 return true;
@@ -449,6 +469,7 @@ public class RayNeoInputInterceptor {
                 }
                 if (cursorActive()) return true;
                 if (!mInjectedContinuousThisSwipe) {
+                    updateTitleSearchLockForNavKey(KeyEvent.KEYCODE_DPAD_DOWN);
                     mInjectedContinuousThisSwipe = injectSwipeKeyEvent(KeyEvent.KEYCODE_DPAD_DOWN);
                 }
                 return true;
@@ -566,6 +587,19 @@ public class RayNeoInputInterceptor {
         return false;
     }
 
+    /** True if the view (or an ancestor) is leanback's SearchBar (search text field + magnifying orb). */
+    private boolean isInsideSearchBar(View v) {
+        View cur = v;
+        while (cur != null) {
+            if (cur.getClass().getName().contains("SearchBar")) {
+                return true;
+            }
+            ViewParent p = cur.getParent();
+            cur = (p instanceof View) ? (View) p : null;
+        }
+        return false;
+    }
+
     /** True if the view (or an ancestor) is the leanback speech (mic) orb. */
     private boolean isSpeechOrb(View v) {
         View cur = v;
@@ -631,6 +665,34 @@ public class RayNeoInputInterceptor {
         return active;
     }
 
+    /**
+     * True if the search-bar magnifying-glass orb is the visually-focused control, even when
+     * Android focus or the cursor has drifted to a result tile below it. On the results screen
+     * there's no cursor, so a tap resolves to whatever is focused; without this, a tap aimed at
+     * the orb could fall through and play the video below. The leanback orb scales up only while
+     * focused, so a >1.0 scale is a reliable "the orb is the active control" signal.
+     */
+    private boolean isSearchBarSearchOrbActive() {
+        if (mActivity.getWindow() == null) {
+            return false;
+        }
+        View decor = mActivity.getWindow().getDecorView();
+        View orb = decor != null ? decor.findViewById(R.id.lb_search_bar_search_orb) : null;
+        if (orb == null || !orb.isShown()) {
+            return false;
+        }
+        boolean active = orb.isFocused() || orb.hasFocus() || orb.isSelected() || orb.isActivated()
+                || orb.getScaleX() > 1.01f || orb.getScaleY() > 1.01f;
+        if (active) {
+            android.util.Log.d(TAG, "search-bar orb active: focused=" + orb.isFocused()
+                    + " hasFocus=" + orb.hasFocus()
+                    + " selected=" + orb.isSelected()
+                    + " activated=" + orb.isActivated()
+                    + " scale=" + orb.getScaleX() + "," + orb.getScaleY());
+        }
+        return active;
+    }
+
     private boolean isDescendantOf(View child, View ancestor) {
         View cur = child;
         while (cur != null) {
@@ -679,6 +741,33 @@ public class RayNeoInputInterceptor {
     private void injectClick() {
         mActivity.runOnUiThread(() -> {
             try {
+                int touchTitleSearchSection = getTouchTitleSearchSection();
+                if (touchTitleSearchSection != 0) {
+                    mTitleSearchLocked = true;
+                    requestTitleSearchFocus("injectClickTouchZone");
+                    if (touchTitleSearchSection == 2) {
+                        android.util.Log.d(TAG, "injectClick -> Gemini voice search (settings title touch zone)");
+                        GeminiVoiceSearch.start(mActivity);
+                    } else {
+                        android.util.Log.d(TAG, "injectClick -> Gemini voice search on Home (title touch zone)");
+                        GeminiVoiceSearch.startOnHome(mActivity);
+                    }
+                    return;
+                }
+
+                int lockedTitleSearchSection = mTitleSearchLocked ? getBrowseTitleSearchSection() : 0;
+                if (lockedTitleSearchSection != 0) {
+                    requestTitleSearchFocus("injectClickLock");
+                    if (lockedTitleSearchSection == 2) {
+                        android.util.Log.d(TAG, "injectClick -> Gemini voice search (locked settings title search)");
+                        GeminiVoiceSearch.start(mActivity);
+                    } else {
+                        android.util.Log.d(TAG, "injectClick -> Gemini voice search on Home (locked title search)");
+                        GeminiVoiceSearch.startOnHome(mActivity);
+                    }
+                    return;
+                }
+
                 final View focus = mDownFocusView != null ? mDownFocusView
                         : (mActivity.getWindow() != null ? mActivity.getWindow().getCurrentFocus() : null);
                 // Cursor clicks must hit-test by pointer position first. Focus
@@ -691,13 +780,41 @@ public class RayNeoInputInterceptor {
                         + " chosen=" + describeViewForLog(target)
                         + " cursor=" + mClickX + "," + mClickY);
 
+                // Home/settings top search orb: reserve the top-left search band
+                // before any focused/captured card is allowed to click. On RayNeo
+                // the visual pointer can be on the orb while Android focus has
+                // already jumped to the first video card below.
+                int titleSearchMode = getBrowseTitleSearchMode(target);
+                if (titleSearchMode != 0) {
+                    if (titleSearchMode == 2) {
+                        android.util.Log.d(TAG, "injectClick -> Gemini voice search (settings title search orb)");
+                        GeminiVoiceSearch.start(mActivity);
+                    } else {
+                        android.util.Log.d(TAG, "injectClick -> Gemini voice search on Home (title search orb)");
+                        GeminiVoiceSearch.startOnHome(mActivity);
+                    }
+                    return;
+                }
+
                 // On the search results screen, the right magnifying-glass orb is
                 // the "record a new Gemini search" control. Detect it by BOTH the
                 // cursor (player) and the focused view (search screen has no
                 // cursor, so the cursor check alone never fired there).
                 if (isCursorInsideViewId(R.id.lb_search_bar_search_orb)
-                        || isInsideViewId(target, R.id.lb_search_bar_search_orb)) {
+                        || isInsideViewId(target, R.id.lb_search_bar_search_orb)
+                        || isSearchBarSearchOrbActive()) {
                     android.util.Log.d(TAG, "injectClick -> Gemini voice search (search magnifying glass)");
+                    GeminiVoiceSearch.start(mActivity);
+                    return;
+                }
+
+                // On the search results screen, focus stays in the search bar until the user swipes
+                // down into the results. So ANY tap while focus is inside the SearchBar (text field
+                // or orb) starts a new voice search; taps once focus has moved into the results below
+                // fall through and play the focused video. This is the reliable "stays on the search
+                // button unless you swiped down" rule — it doesn't depend on flaky orb focus/scale.
+                if (isInsideSearchBar(target) || isInsideSearchBar(focus)) {
+                    android.util.Log.d(TAG, "injectClick -> Gemini voice search (focus in search bar)");
                     GeminiVoiceSearch.start(mActivity);
                     return;
                 }
@@ -709,19 +826,16 @@ public class RayNeoInputInterceptor {
                     return;
                 }
 
-                // The home/title search orb's own activation misbehaves on this
-                // device. Keep this limited to the title orb and show Gemini
-                // results on the Home screen instead of launching SearchView.
-                if (isTitleSearchOrbActive(target)) {
-                    android.util.Log.d(TAG, "injectClick -> Gemini voice search on Home (title search orb)");
-                    GeminiVoiceSearch.startOnHome(mActivity);
-                    return;
-                }
-
-                // Search text field is display-only on the glasses. Voice search
-                // is started by the left microphone orb, not by tapping the text.
+                // Search text field is display-only on the glasses. On the search screen a tap on
+                // it should start a NEW voice search (rather than do nothing); elsewhere, ignore it.
                 if (target instanceof android.widget.EditText) {
-                    android.util.Log.d(TAG, "injectClick ignored search text display");
+                    View searchDecor = mActivity.getWindow() != null ? mActivity.getWindow().getDecorView() : null;
+                    if (searchDecor != null && searchDecor.findViewById(R.id.lb_search_bar_search_orb) != null) {
+                        android.util.Log.d(TAG, "injectClick -> Gemini voice search (search text field)");
+                        GeminiVoiceSearch.start(mActivity);
+                    } else {
+                        android.util.Log.d(TAG, "injectClick ignored search text display");
+                    }
                     return;
                 }
 
@@ -780,6 +894,33 @@ public class RayNeoInputInterceptor {
         return new float[] {decorX, decorY};
     }
 
+    private float[] getCursorScreenPoint() {
+        float cx = mClickX >= 0f ? mClickX : mCursorX;
+        float cy = mClickY >= 0f ? mClickY : mCursorY;
+        if (cx < 0f || cy < 0f) {
+            return null;
+        }
+
+        if (mHalfWidth > 0) {
+            cx = Math.max(0f, Math.min(mHalfWidth - 2f, cx));
+        }
+
+        if (mCursorHost != null) {
+            int[] hostLoc = new int[2];
+            mCursorHost.getLocationOnScreen(hostLoc);
+            return new float[] {hostLoc[0] + cx, hostLoc[1] + cy};
+        }
+
+        View decor = mActivity.getWindow() != null ? mActivity.getWindow().getDecorView() : null;
+        if (decor != null) {
+            int[] decorLoc = new int[2];
+            decor.getLocationOnScreen(decorLoc);
+            return new float[] {decorLoc[0] + cx, decorLoc[1] + cy};
+        }
+
+        return new float[] {cx, cy};
+    }
+
     private boolean isCursorInsideViewId(int viewId) {
         if (mActivity.getWindow() == null) {
             return false;
@@ -787,25 +928,172 @@ public class RayNeoInputInterceptor {
 
         View decor = mActivity.getWindow().getDecorView();
         View target = decor != null ? decor.findViewById(viewId) : null;
-        float[] point = getCursorDecorPoint();
+        float[] point = getCursorScreenPoint();
         if (target == null || !target.isShown() || point == null) {
             return false;
         }
 
         Rect rect = new Rect();
-        target.getHitRect(rect);
-        ViewParent parent = target.getParent();
-        while (parent instanceof View && parent != decor) {
-            View parentView = (View) parent;
-            rect.offset((int) parentView.getX(), (int) parentView.getY());
-            parent = parentView.getParent();
+        if (!target.getGlobalVisibleRect(rect)) {
+            return false;
         }
 
         boolean inside = rect.contains(Math.round(point[0]), Math.round(point[1]));
         if (inside) {
             android.util.Log.d(TAG, "cursor inside "
                     + describeViewForLog(target)
-                    + " rect=" + rect
+                    + " screenRect=" + rect
+                    + " screenPoint=" + point[0] + "," + point[1]);
+        }
+        return inside;
+    }
+
+    /**
+     * Returns 1 for Home top search, 2 for Settings top search, or 0 when the
+     * current click should fall through. This is intentionally based on a
+     * reserved screen band plus the real title_orb bounds, not on current focus.
+     */
+    private int getBrowseTitleSearchMode(View target) {
+        int section = getBrowseTitleSearchSection();
+        if (section == 0) {
+            return 0;
+        }
+
+        View orb = findTitleSearchOrb();
+        boolean onOrb = isCursorInsideViewId(R.id.title_orb) || isDescendantOf(target, orb);
+        boolean inBand = isCursorInTitleSearchBand();
+        if (onOrb || inBand) {
+            android.util.Log.d(TAG, "title search guard hit mode=" + (section == 2 ? "settings" : "home")
+                    + " onOrb=" + onOrb
+                    + " inBand=" + inBand
+                    + " target=" + describeViewForLog(target));
+            return section;
+        }
+        return 0;
+    }
+
+    private int getBrowseTitleSearchSection() {
+        View orb = findTitleSearchOrb();
+        if (orb == null || !orb.isShown()) {
+            return 0;
+        }
+
+        try {
+            BrowsePresenter browse = BrowsePresenter.instance(mActivity);
+            if (browse.isSettingsSection()) {
+                return 2;
+            }
+            if (browse.isHomeSection()) {
+                return 1;
+            }
+        } catch (Throwable ignored) {
+        }
+        return 0;
+    }
+
+    private int getTouchTitleSearchSection() {
+        int section = getBrowseTitleSearchSection();
+        if (section == 0) {
+            return 0;
+        }
+
+        // RayNeo Home taps often have no cursor coordinates and focus may still
+        // be on a video card. Use the physical touch DOWN area as a separate,
+        // tap-only route for the top search controls. Observed gallery rows are
+        // well below this band, so horizontal row swipes are unaffected.
+        boolean inTopSearchBand = mTouchDownY >= 0f && mTouchDownY <= 285f
+                && mTouchDownX >= 0f && mTouchDownX <= 520f;
+        if (inTopSearchBand) {
+            android.util.Log.d(TAG, "title search touch zone hit section=" + section
+                    + " down=" + mTouchDownX + "," + mTouchDownY
+                    + " focus=" + describeFocus());
+            return section;
+        }
+        return 0;
+    }
+
+    private void requestTitleSearchFocus(String reason) {
+        try {
+            View orb = findTitleSearchOrb();
+            if (orb != null && orb.isShown()) {
+                orb.setFocusable(true);
+                orb.setFocusableInTouchMode(true);
+                orb.requestFocus();
+                mSearchOrbFocusUntilMs = SystemClock.uptimeMillis() + SEARCH_ORB_FOCUS_LATCH_MS;
+                android.util.Log.d(TAG, "title search focus lock reason=" + reason
+                        + " section=" + getBrowseTitleSearchSection()
+                        + " focus=" + describeFocus());
+            }
+        } catch (Throwable e) {
+            android.util.Log.d(TAG, "title search focus lock failed reason=" + reason
+                    + " error=" + e.getMessage());
+        }
+    }
+
+    private void updateTitleSearchLockForNavKey(int keyCode) {
+        int section = getBrowseTitleSearchSection();
+        if (section == 0) {
+            return;
+        }
+
+        if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+            if (mTitleSearchLocked) {
+                android.util.Log.d(TAG, "title search unlocked by explicit DOWN swipe");
+            }
+            mTitleSearchLocked = false;
+            return;
+        }
+
+        if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+            // When the user navigates back upward to the top controls, re-arm the
+            // lock so a tap on the top search area cannot fall through to row 1.
+            View orb = findTitleSearchOrb();
+            View focus = mActivity.getWindow() != null ? mActivity.getWindow().getCurrentFocus() : null;
+            if (orb != null && (isDescendantOf(focus, orb) || orb.isFocused() || orb.hasFocus())) {
+                mTitleSearchLocked = true;
+                requestTitleSearchFocus("upToTitleSearch");
+            }
+        }
+    }
+
+    private boolean isCursorInTitleSearchBand() {
+        if (mActivity.getWindow() == null) {
+            return false;
+        }
+
+        View decor = mActivity.getWindow().getDecorView();
+        float[] point = getCursorScreenPoint();
+        if (decor == null || point == null) {
+            return false;
+        }
+
+        Rect decorRect = new Rect();
+        if (!decor.getGlobalVisibleRect(decorRect)) {
+            return false;
+        }
+
+        View orb = decor.findViewById(R.id.title_orb);
+        if (orb != null && orb.isShown()) {
+            Rect orbRect = new Rect();
+            if (orb.getGlobalVisibleRect(orbRect)) {
+                int padX = Math.max(24, orbRect.width() / 2);
+                int padY = Math.max(18, orbRect.height() / 2);
+                orbRect.inset(-padX, -padY);
+                if (orbRect.contains(Math.round(point[0]), Math.round(point[1]))) {
+                    android.util.Log.d(TAG, "cursor in expanded title_orb band rect=" + orbRect
+                            + " point=" + point[0] + "," + point[1]);
+                    return true;
+                }
+            }
+        }
+
+        float w = decorRect.width();
+        float h = decorRect.height();
+        float x = point[0] - decorRect.left;
+        float y = point[1] - decorRect.top;
+        boolean inside = x >= w * 0.16f && x <= w * 0.31f && y >= 0 && y <= h * 0.26f;
+        if (inside) {
+            android.util.Log.d(TAG, "cursor in fallback title search band decor=" + decorRect
                     + " point=" + point[0] + "," + point[1]);
         }
         return inside;
@@ -942,13 +1230,13 @@ public class RayNeoInputInterceptor {
             injectKeyEventAsync(keyCode);
             return;
         }
-        final int before = navGridSelectedPosition();
+        final int before = navGridSelectedPosition(keyCode);
         // Verify only AFTER the key is actually injected (the injection waits on
         // a touch-mode poll, so a fixed timer fires too early and always resends
         // → skipped rows). The callback runs once the key has been sent; give
         // leanback a brief moment to update the selection, then check.
         injectKeyEventAsync(keyCode, () -> mUiHandler.postDelayed(() -> {
-            int after = navGridSelectedPosition();
+            int after = navGridSelectedPosition(keyCode);
             if (before != Integer.MIN_VALUE && after == before) {
                 log("nav verify: selection unchanged (pos=" + before + "), resending " + keyToString(keyCode));
                 injectKeyEventAsync(keyCode);
@@ -958,9 +1246,12 @@ public class RayNeoInputInterceptor {
         }, 90L));
     }
 
-    /** Selected position of the VerticalGridView holding the current focus (or
-     *  the visible one) — used to detect whether a nav key actually moved. */
-    private int navGridSelectedPosition() {
+    /** Selected position of the grid holding the current focus — used to detect whether a nav
+     *  key actually moved. For LEFT/RIGHT it reads the inner HorizontalGridView (the row), since
+     *  a sideways move changes the position WITHIN the row, not the outer VerticalGridView's row
+     *  index. Reading the vertical grid for a horizontal key would always look "unchanged" and
+     *  trigger a resend → every gallery swipe skips an item. */
+    private int navGridSelectedPosition(int keyCode) {
         if (mActivity.getWindow() == null) {
             return Integer.MIN_VALUE;
         }
@@ -969,11 +1260,33 @@ public class RayNeoInputInterceptor {
         if (focus == null && decor != null) {
             focus = decor.findFocus();
         }
+
+        boolean horizontal = keyCode == KeyEvent.KEYCODE_DPAD_LEFT
+                || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT;
+        if (horizontal) {
+            HorizontalGridView row = focus != null ? findAncestorHorizontalGridView(focus) : null;
+            return row != null ? row.getSelectedPosition() : Integer.MIN_VALUE;
+        }
+
         VerticalGridView grid = focus != null ? findAncestorVerticalGridView(focus) : null;
         if (grid == null) {
             grid = findVisibleVerticalGridView(decor);
         }
         return grid != null ? grid.getSelectedPosition() : Integer.MIN_VALUE;
+    }
+
+    private HorizontalGridView findAncestorHorizontalGridView(View view) {
+        View current = view;
+        while (current != null) {
+            if (current instanceof HorizontalGridView) {
+                return (HorizontalGridView) current;
+            }
+
+            ViewParent parent = current.getParent();
+            current = parent instanceof View ? (View) parent : null;
+        }
+
+        return null;
     }
 
     /** Leave touch mode (off the main thread) so a programmatic focus move via
@@ -1099,6 +1412,15 @@ public class RayNeoInputInterceptor {
             current = decor.findFocus();
         }
 
+        if (mTitleSearchLocked
+                && getBrowseTitleSearchSection() != 0
+                && (direction == View.FOCUS_LEFT || direction == View.FOCUS_RIGHT)
+                && !isContentFocus(current)) {
+            requestTitleSearchFocus("consumeHorizontalWhileTitleLocked");
+            log("title search lock consumed horizontal key=" + keyToString(keyCode));
+            return true;
+        }
+
         // For vertical moves inside a leanback list, defer to NATIVE DPAD
         // (injectKeyEventAsync). Native leanback moves selection, focus,
         // highlight and scroll together and handles touch mode; our manual
@@ -1111,6 +1433,18 @@ public class RayNeoInputInterceptor {
             if (inGrid) {
                 log("vertical nav deferred to native DPAD key=" + keyToString(keyCode));
                 return false;
+            }
+        }
+
+        // Horizontal moves inside a gallery row must never fall through to the
+        // nav drawer. Move exactly one item ourselves; at the first item, consume
+        // LEFT instead of letting leanback open the main menu.
+        if (direction == View.FOCUS_LEFT || direction == View.FOCUS_RIGHT) {
+            if (current != null && moveHorizontalGridSelection(current, direction)) {
+                return true;
+            }
+            if (direction == View.FOCUS_RIGHT && moveFocusOutOfLeftMenu()) {
+                return true;
             }
         }
 
@@ -1151,6 +1485,19 @@ public class RayNeoInputInterceptor {
         }
 
         return false;
+    }
+
+    private boolean isContentFocus(View view) {
+        if (view == null) {
+            return false;
+        }
+        if (isSearchOrb(view) || isInsideSearchBar(view) || isSpeechOrb(view)) {
+            return false;
+        }
+        return findAncestorHorizontalGridView(view) != null
+                || findAncestorVerticalGridView(view) != null
+                || view instanceof HorizontalGridView
+                || view instanceof VerticalGridView;
     }
 
     private boolean moveVerticalGridSelection(View current, int direction) {
@@ -1213,6 +1560,100 @@ public class RayNeoInputInterceptor {
         grid.setSelectedPosition(nextPosition);
         focusSelectedGridChild(grid, nextPosition, direction, 0);
         return true;
+    }
+
+    private boolean moveHorizontalGridSelection(View current, int direction) {
+        if (direction != View.FOCUS_LEFT && direction != View.FOCUS_RIGHT) {
+            return false;
+        }
+
+        HorizontalGridView row = findAncestorHorizontalGridView(current);
+        if (row == null || row.getAdapter() == null || row.getAdapter().getItemCount() == 0) {
+            return false;
+        }
+
+        int position = row.getSelectedPosition();
+        if (position < 0) {
+            position = findChildAdapterPosition(row, current);
+        }
+        if (position < 0) {
+            log("horizontal row selection failed: no adapter position current=" + describeView(current));
+            return true;
+        }
+
+        int nextPosition = direction == View.FOCUS_RIGHT ? position + 1 : position - 1;
+        int itemCount = row.getAdapter().getItemCount();
+        if (nextPosition < 0 || nextPosition >= itemCount) {
+            log("horizontal row edge consumed position=" + position
+                    + " next=" + nextPosition
+                    + " count=" + itemCount
+                    + " direction=" + direction);
+            return true;
+        }
+
+        log("horizontal row selection move position=" + position
+                + " next=" + nextPosition
+                + " direction=" + direction
+                + " row=" + describeView(row));
+        row.setSelectedPosition(nextPosition);
+        focusSelectedHorizontalChild(row, nextPosition, direction, 0);
+        return true;
+    }
+
+    private boolean moveFocusOutOfLeftMenu() {
+        if (mActivity.getWindow() == null) {
+            return false;
+        }
+
+        View decor = mActivity.getWindow().getDecorView();
+        View focus = mActivity.getWindow().getCurrentFocus();
+        if (decor == null || focus == null || findAncestorHorizontalGridView(focus) != null) {
+            return false;
+        }
+
+        Rect decorRect = new Rect();
+        Rect focusRect = new Rect();
+        if (!decor.getGlobalVisibleRect(decorRect) || !focus.getGlobalVisibleRect(focusRect)) {
+            return false;
+        }
+        if (focusRect.centerX() > decorRect.left + decorRect.width() * 0.42f) {
+            return false;
+        }
+
+        HorizontalGridView row = findVisibleHorizontalGridView(decor);
+        if (row == null || row.getAdapter() == null || row.getAdapter().getItemCount() == 0) {
+            return false;
+        }
+
+        int position = Math.max(0, row.getSelectedPosition());
+        log("right swipe exits left menu to content row position=" + position
+                + " row=" + describeView(row)
+                + " focusBefore=" + describeFocus());
+        row.setSelectedPosition(position);
+        focusSelectedHorizontalChild(row, position, View.FOCUS_RIGHT, 0);
+        return true;
+    }
+
+    private HorizontalGridView findVisibleHorizontalGridView(View root) {
+        if (root == null || !root.isShown()) {
+            return null;
+        }
+        if (root instanceof HorizontalGridView) {
+            HorizontalGridView row = (HorizontalGridView) root;
+            if (row.getAdapter() != null && row.getAdapter().getItemCount() > 0) {
+                return row;
+            }
+        }
+        if (root instanceof android.view.ViewGroup) {
+            android.view.ViewGroup group = (android.view.ViewGroup) root;
+            for (int i = group.getChildCount() - 1; i >= 0; i--) {
+                HorizontalGridView found = findVisibleHorizontalGridView(group.getChildAt(i));
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        return null;
     }
 
     /** First visible VerticalGridView with a populated adapter (the active list). */
@@ -1297,7 +1738,7 @@ public class RayNeoInputInterceptor {
         return null;
     }
 
-    private int findChildAdapterPosition(VerticalGridView grid, View current) {
+    private int findChildAdapterPosition(RecyclerView grid, View current) {
         View view = current;
         while (view != null && view.getParent() != grid) {
             ViewParent parent = view.getParent();
@@ -1305,6 +1746,44 @@ public class RayNeoInputInterceptor {
         }
 
         return view != null ? grid.getChildAdapterPosition(view) : -1;
+    }
+
+    private void focusSelectedHorizontalChild(HorizontalGridView row, int position, int direction, int attempt) {
+        row.postDelayed(() -> {
+            if (mActivity.isFinishing() || mActivity.isDestroyed()) {
+                return;
+            }
+
+            exitTouchModeAsync();
+
+            RecyclerView.ViewHolder viewHolder = row.findViewHolderForAdapterPosition(position);
+            View itemView = viewHolder != null ? viewHolder.itemView : null;
+            if (itemView != null && itemView.isShown()) {
+                boolean focused = itemView.requestFocus(direction);
+                if (!focused) {
+                    focused = itemView.requestFocus();
+                }
+                if (focused) {
+                    log("horizontal row focus selected position=" + position
+                            + " attempt=" + attempt
+                            + " focused=true item=" + describeView(itemView)
+                            + " focusAfter=" + describeFocus());
+                    return;
+                }
+            }
+
+            if (attempt < 4) {
+                log("horizontal row focus retry position=" + position
+                        + " attempt=" + attempt
+                        + " holder=" + (viewHolder != null)
+                        + " item=" + describeView(itemView));
+                focusSelectedHorizontalChild(row, position, direction, attempt + 1);
+            } else {
+                log("horizontal row focus failed position=" + position
+                        + " holder=" + (viewHolder != null)
+                        + " item=" + describeView(itemView));
+            }
+        }, attempt == 0 ? 35L : 55L);
     }
 
     private View findDeterministicFocusTarget(View current, int direction) {

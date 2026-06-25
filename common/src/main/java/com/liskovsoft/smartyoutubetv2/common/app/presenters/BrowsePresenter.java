@@ -50,8 +50,11 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Callable;
 
 import io.reactivex.Observable;
@@ -644,7 +647,7 @@ public class BrowsePresenter extends BasePresenter<BrowseView> implements Sectio
         mCurrentSection = home;
         mCurrentVideo = null;
         getView().selectSection(homeIndex, true);
-        updateVideoRows(home, getContentService().getSearchObserve(searchText));
+        updateVideoRowsDeduped(home, getContentService().getSearchObserve(searchText));
         return true;
     }
 
@@ -726,6 +729,14 @@ public class BrowsePresenter extends BasePresenter<BrowseView> implements Sectio
     }
 
     private void updateVideoRows(BrowseSection section, Observable<List<MediaGroup>> groups) {
+        updateVideoRowsInternal(section, groups, false);
+    }
+
+    private void updateVideoRowsDeduped(BrowseSection section, Observable<List<MediaGroup>> groups) {
+        updateVideoRowsInternal(section, groups, true);
+    }
+
+    private void updateVideoRowsInternal(BrowseSection section, Observable<List<MediaGroup>> groups, boolean dedupeVideos) {
         Log.d(TAG, "updateRowsHeader: Start loading section: " + section.getTitle());
 
         disposeActions();
@@ -754,6 +765,8 @@ public class BrowsePresenter extends BasePresenter<BrowseView> implements Sectio
                             getView().showProgressBar(false);
 
                             filterHomeIfNeeded(mediaGroups);
+                            Set<String> seenVideos = dedupeVideos ? new HashSet<>() : null;
+                            int removedDuplicates = 0;
 
                             for (MediaGroup mediaGroup : mediaGroups) {
                                 if (mediaGroup.isEmpty()) {
@@ -762,6 +775,12 @@ public class BrowsePresenter extends BasePresenter<BrowseView> implements Sectio
                                 }
 
                                 VideoGroup videoGroup = VideoGroup.from(mediaGroup, section);
+                                if (dedupeVideos) {
+                                    removedDuplicates += removeDuplicateVideos(videoGroup, seenVideos);
+                                    if (videoGroup.isEmpty()) {
+                                        continue;
+                                    }
+                                }
 
                                 if (TextUtils.isEmpty(videoGroup.getTitle())) {
                                     videoGroup.setTitle(getContext().getString(R.string.suggestions));
@@ -772,6 +791,9 @@ public class BrowsePresenter extends BasePresenter<BrowseView> implements Sectio
 
                                 continueGroupIfNeeded(videoGroup, false);
                             }
+                            if (dedupeVideos) {
+                                Log.d(TAG, "Gemini Home search dedupe removed %s repeated items", removedDuplicates);
+                            }
                         },
                         error -> {
                             Log.e(TAG, "updateRowsHeader error: %s", error.getMessage());
@@ -779,6 +801,80 @@ public class BrowsePresenter extends BasePresenter<BrowseView> implements Sectio
                         }, () -> handleLoadError(null));
 
         mActions.add(updateAction);
+    }
+
+    private int removeDuplicateVideos(VideoGroup group, Set<String> seenVideos) {
+        if (group == null || group.getVideos() == null || seenVideos == null) {
+            return 0;
+        }
+
+        int removed = 0;
+        List<Video> copy = new ArrayList<>(group.getVideos());
+        for (Video video : copy) {
+            String key = getDedupeKey(video);
+            if (key == null) {
+                continue;
+            }
+            if (!seenVideos.add(key)) {
+                group.remove(video);
+                removed++;
+            }
+        }
+        return removed;
+    }
+
+    private String getDedupeKey(Video video) {
+        if (video == null) {
+            return null;
+        }
+        String titleKey = normalizeVideoTitle(video.getTitle());
+        if (!TextUtils.isEmpty(titleKey)) {
+            return "t:" + titleKey;
+        }
+        if (!TextUtils.isEmpty(video.videoId)) {
+            return "v:" + video.videoId;
+        }
+        if (!TextUtils.isEmpty(video.playlistId)) {
+            return "p:" + video.playlistId;
+        }
+        if (!TextUtils.isEmpty(video.channelId)) {
+            return "c:" + video.channelId;
+        }
+        return null;
+    }
+
+    private String normalizeVideoTitle(String title) {
+        String raw = title != null ? title.toLowerCase(Locale.US)
+                .replaceAll("\\([^)]*\\)|\\[[^]]*\\]", " ")
+                .trim() : null;
+        if (raw != null) {
+            String[] artistSplit = raw.split("\\s+-\\s+|\\s+–\\s+|\\s+—\\s+|\\s+by\\s+", 2);
+            if (artistSplit.length == 2 && artistSplit[1].trim().length() >= 4) {
+                raw = artistSplit[1].trim();
+            }
+        }
+
+        if (raw == null) {
+            return null;
+        }
+
+        String normalized = raw.toLowerCase(Locale.US)
+                .replaceAll("\\([^)]*\\)|\\[[^]]*\\]", " ")
+                .replaceAll("[^a-z0-9]+", " ")
+                .replaceAll("\\bofficial\\b", " ")
+                .replaceAll("\\blyric(s)?\\b", " ")
+                .replaceAll("\\bvideo\\b", " ")
+                .replaceAll("\\bmusic\\b", " ")
+                .replaceAll("\\baudio\\b", " ")
+                .replaceAll("\\bremaster(ed)?\\b", " ")
+                .replaceAll("\\bhd\\b|\\b4k\\b|\\b8k\\b", " ")
+                .replaceAll("\\bmv\\b|\\bpv\\b", " ")
+                .replaceAll("\\b19\\d\\d\\b|\\b20\\d\\d\\b", " ")
+                .replaceAll("\\b\\d{2}\\b", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+
+        return normalized.length() >= 4 ? normalized : null;
     }
 
     private void updateVideoGrid(BrowseSection section, Observable<MediaGroup> group, int column) {

@@ -59,7 +59,7 @@ steps.
    ```
 4. Tap the magnifying glass to start voice search.
 
-See [`gemini_key.txt.example`](./gemini_key.txt.example) for the full key
+See [`gemini_setup.txt.example`](./gemini_setup.txt.example) for the full key
 instructions. Your key is stored only in app-private preferences and is **not**
 committed to the repo.
 

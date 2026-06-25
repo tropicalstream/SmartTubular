@@ -1,0 +1,73 @@
+# ============================================================================
+#  SmartTubular — Gemini voice search setup (key, model, system prompt)
+# ============================================================================
+#
+#  Voice search uses Google's free Gemini API (the glasses' own speech
+#  recognizer doesn't work for third-party apps). Typing on the glasses isn't
+#  practical, and Android 14 blocks pushing files into the app's folder, so
+#  everything below is set with a single `adb` broadcast instead of a file the
+#  app reads.
+#
+#  Copy this file to `gemini_setup.txt` (which is git-ignored) and put your real
+#  key in it so you don't lose it.
+#
+# ----------------------------------------------------------------------------
+#  STEP 1 — Get a free key
+# ----------------------------------------------------------------------------
+#    https://aistudio.google.com/app/apikey  (sign in, "Create API key", copy).
+#    The free tier is plenty and needs no credit card.
+#
+# ----------------------------------------------------------------------------
+#  STEP 2 — Send the key to the app (replace YOUR_GEMINI_API_KEY)
+# ----------------------------------------------------------------------------
+#    adb shell am broadcast -a org.smarttube.beta.cc.SET_GEMINI_KEY \
+#      -n org.smarttube.beta.cc/com.liskovsoft.smartyoutubetv2.tv.ui.common.keyhandler.GeminiKeyReceiver \
+#      --es key "YOUR_GEMINI_API_KEY"
+#
+#    You'll see a "Gemini key saved" toast. Stored in app-private prefs. Do this
+#    once (re-do only if you reinstall or clear app data).
+#
+# ----------------------------------------------------------------------------
+#  STEP 3 — Open SmartTubular and tap the magnifying glass to search by voice.
+# ----------------------------------------------------------------------------
+#
+# ----------------------------------------------------------------------------
+#  OPTIONAL — change the model (default: gemini-2.5-flash)
+# ----------------------------------------------------------------------------
+#    adb shell am broadcast -a org.smarttube.beta.cc.SET_GEMINI_KEY \
+#      -n org.smarttube.beta.cc/com.liskovsoft.smartyoutubetv2.tv.ui.common.keyhandler.GeminiKeyReceiver \
+#      --es model "gemini-2.5-flash-lite"
+#
+# ============================================================================
+#  OPTIONAL — change the system prompt
+# ============================================================================
+#  The app ships with a capable default prompt baked in, so you only need this
+#  if you want to change how spoken requests become searches. Most users won't.
+#
+#  HOW THE DEFAULT WORKS: the baked-in prompt asks Gemini for a small JSON reply.
+#  A normal request returns {"mode":"search","query":"..."} and runs that query.
+#  A request that wants MULTIPLE titles — either "similar to X" / "sounds like X"
+#  / "movies like X", or a ranked list like "highest rated animated films" /
+#  "best new wave songs of the 80s" — returns
+#  {"mode":"list","title":"...","items":["Artist - Song", ...]}, and the app
+#  searches each item and shows the top hit of each as one results row. That JSON
+#  contract is what powers the multi-title results — you don't edit it here.
+#
+#  OPTIONAL plain-text override: if you just want to nudge how plain searches are
+#  phrased, you can set a simple one-line prompt. The app falls back to using the
+#  whole reply as the search query, so a plain-text prompt still works for normal
+#  searches — but it DISABLES "similar to X" discovery (that needs the JSON
+#  contract above). Keep it to ONE clean query; do not ask for reviews, summaries,
+#  markdown, or conversation, or search will break.
+#
+#    adb shell am broadcast -a org.smarttube.beta.cc.SET_GEMINI_KEY \
+#      -n org.smarttube.beta.cc/com.liskovsoft.smartyoutubetv2.tv.ui.common.keyhandler.GeminiKeyReceiver \
+#      --es prompt "Output ONLY one plain-text YouTube search query for what the user said: their words verbatim if they name something specific, otherwise the most likely real title. No quotes, no markdown, no extra text."
+#
+#    You'll see a "Gemini prompt updated" toast. To restore the full built-in
+#    default (and re-enable discovery), clear the app's data.
+#
+# ============================================================================
+#  SECURITY: the key only lives in app-private storage and your shell history.
+#  If it leaks, rotate it at the aistudio link above and re-run STEP 2.
+# ============================================================================

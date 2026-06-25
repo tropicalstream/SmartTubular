@@ -14,8 +14,11 @@ import android.widget.Toast;
  *       -n ${applicationId}/com.liskovsoft.smartyoutubetv2.tv.ui.common.keyhandler.GeminiKeyReceiver \
  *       --es key "YOUR_GEMINI_API_KEY"
  *
- * The key is stored in app-private prefs. This receiver only WRITES the key; it
- * never reads it back out. It can be removed once the key is set if desired.
+ * The same receiver also accepts optional "model" and "prompt" extras to override
+ * the Gemini model and the voice-search system prompt (see gemini_setup.txt).
+ *
+ * The values are stored in app-private prefs. This receiver only WRITES them; it
+ * never reads them back out. It can be removed once the key is set if desired.
  */
 public class GeminiKeyReceiver extends BroadcastReceiver {
     private static final String TAG = "GeminiVoiceSearch";
@@ -33,10 +36,18 @@ public class GeminiKeyReceiver extends BroadcastReceiver {
             } catch (Throwable ignored) {
             }
         }
+        String prompt = intent.getStringExtra("prompt");
+        if (prompt != null && !prompt.trim().isEmpty()) {
+            GeminiVoiceSearch.savePrompt(context, prompt);
+            try {
+                Toast.makeText(context, "Gemini prompt updated", Toast.LENGTH_SHORT).show();
+            } catch (Throwable ignored) {
+            }
+        }
         String key = intent.getStringExtra("key");
         if (key == null || key.trim().isEmpty()) {
-            if (model == null) {
-                Log.e(TAG, "SET_GEMINI_KEY received with no 'key' or 'model' extra");
+            if (model == null && prompt == null) {
+                Log.e(TAG, "SET_GEMINI_KEY received with no 'key', 'model', or 'prompt' extra");
             }
             return;
         }

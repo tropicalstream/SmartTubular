@@ -15,6 +15,7 @@ import com.liskovsoft.sharedutils.helpers.PermissionHelpers;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.BrowsePresenter;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.SearchPresenter;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
@@ -22,6 +23,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -30,8 +33,8 @@ import java.util.concurrent.Executors;
  * recognizer: records the mic with AudioRecord, transcribes via the free
  * Gemini 2.5 Flash API, and runs the result through SmartTube's search.
  *
- * The Gemini API key is read once from a file the user pushes over adb
- * (see gemini_key.txt) and then cached in prefs.
+ * The Gemini API key (and optional model/prompt) are set over an adb broadcast
+ * into app-private prefs (see gemini_setup.txt).
  */
 public final class GeminiVoiceSearch {
     private static final String TAG = "GeminiVoiceSearch";
@@ -46,6 +49,30 @@ public final class GeminiVoiceSearch {
         "gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash-lite"
     };
     private static volatile String sLastError;
+
+    // System prompt fed to Gemini. The reply is parsed as JSON: a normal search runs the
+    // "query"; a discovery request returns a list of specific titles that the app searches
+    // individually and aggregates. Overridable over adb (GeminiKeyReceiver "prompt" extra)
+    // — see gemini_setup.txt. Non-JSON replies fall back to being used as a plain query.
+    private static final String PREF_PROMPT = "gemini_prompt";
+    private static final String DEFAULT_PROMPT =
+        "You turn a spoken request into a YouTube action. Reply with ONLY a single minified JSON "
+        + "object and nothing else — no markdown, no code fences, no commentary. Two shapes:\n"
+        + "A. Normal search: {\"mode\":\"search\",\"query\":\"<one search query>\"}\n"
+        + "B. List — the user wants MULTIPLE distinct titles rather than one result. This covers both "
+        + "(i) similarity (\"songs that sound like X\", \"more like X\", \"movies like X\", \"bands like X\") "
+        + "and (ii) ranked or curated lists (\"highest rated / best / top / greatest / most popular / "
+        + "essential / recommend ... \", e.g. \"highest rated animated films\", \"best new wave songs of the "
+        + "80s\"): {\"mode\":\"list\",\"title\":\"<short label, e.g. Highest rated animated films>\","
+        + "\"items\":[\"<specific title 1>\",\"<specific title 2>\"]}\n"
+        + "Rules:\n"
+        + "- mode search: if the user names something specific, use those words verbatim; if the request "
+        + "is vague, resolve it to the most likely real title; strip filler (um, please find, show me).\n"
+        + "- mode list: items must be 10 to 18 SPECIFIC, real, searchable titles that genuinely fit the "
+        + "request — for similarity, things that resemble the reference (never the reference itself); for a "
+        + "ranked list, the actual top titles. Use \"Artist - Song\" for music or \"Title (year)\" for "
+        + "video/film. Do not invent nonexistent titles.\n"
+        + "- Never put any text outside the JSON object.";
 
     private static final int SAMPLE_RATE = 16000;
     private static final int MAX_MS = 8000;        // hard cap on a single utterance
@@ -84,7 +111,7 @@ public final class GeminiVoiceSearch {
         }
         final String key = loadKey(activity);
         if (key == null || key.isEmpty()) {
-            toast(activity, "No Gemini key set — see gemini_key.txt (adb broadcast)");
+            toast(activity, "No Gemini key set — see gemini_setup.txt (adb broadcast)");
             return;
         }
 
@@ -109,12 +136,13 @@ public final class GeminiVoiceSearch {
                 // that model is overloaded right now, so another usually works
                 // immediately. Short backoff between attempts.
                 String[] models = modelFallbackList(activity);
+                String prompt = getPrompt(activity);
                 String text = null;
                 for (int i = 0; i < models.length && text == null; i++) {
                     if (i > 0) {
                         try { Thread.sleep(500L * i); } catch (InterruptedException ignored) { }
                     }
-                    text = transcribe(key, models[i], wav);
+                    text = transcribe(key, models[i], prompt, wav);
                 }
                 finish(activity, preferHomeResults, text, text == null
                         ? (sLastError != null ? sLastError : "Couldn't transcribe — try again") : null);
@@ -133,19 +161,63 @@ public final class GeminiVoiceSearch {
                 return;
             }
             if (text != null && !text.trim().isEmpty()) {
-                String q = text.trim();
-                Log.d(TAG, "result query: " + q);
+                String raw = text.trim();
+                Log.d(TAG, "gemini reply: " + raw);
                 try {
-                    if (!preferHomeResults || !BrowsePresenter.instance(activity).showSearchResultsOnHome(q)) {
-                        SearchPresenter.instance(activity).onSearch(q);
+                    String mode = null;
+                    String query = null;
+                    String simTitle = null;
+                    List<String> items = null;
+                    try {
+                        JSONObject obj = new JSONObject(extractJson(raw));
+                        mode = obj.optString("mode", null);
+                        query = obj.optString("query", null);
+                        simTitle = obj.optString("title", null);
+                        if (obj.has("items")) {
+                            JSONArray arr = obj.getJSONArray("items");
+                            items = new ArrayList<>();
+                            for (int i = 0; i < arr.length(); i++) {
+                                String it = arr.optString(i, null);
+                                if (it != null && !it.trim().isEmpty()) {
+                                    items.add(it.trim());
+                                }
+                            }
+                        }
+                    } catch (Throwable parseErr) {
+                        // Not JSON — fall through and use the raw reply as a plain query.
+                    }
+
+                    if ("list".equals(mode) && items != null && !items.isEmpty()) {
+                        String label = (simTitle != null && !simTitle.isEmpty()) ? simTitle : "Results";
+                        Log.d(TAG, "list: " + label + " (" + items.size() + " items)");
+                        SearchPresenter.instance(activity).displayList(label, items);
+                    } else {
+                        String q = (query != null && !query.isEmpty()) ? query : raw;
+                        Log.d(TAG, "result query: " + q);
+                        if (!preferHomeResults || !BrowsePresenter.instance(activity).showSearchResultsOnHome(q)) {
+                            SearchPresenter.instance(activity).onSearch(q);
+                        }
                     }
                 } catch (Throwable e) {
-                    Log.e(TAG, "onSearch failed: " + e.getMessage());
+                    Log.e(TAG, "finish failed: " + e.getMessage());
                 }
             } else if (errMsg != null) {
                 toast(activity, errMsg);
             }
         });
+    }
+
+    /** Pull the outermost {...} object out of a reply, tolerating ```json fences or stray prose. */
+    private static String extractJson(String s) {
+        if (s == null) {
+            return "";
+        }
+        int a = s.indexOf('{');
+        int b = s.lastIndexOf('}');
+        if (a >= 0 && b > a) {
+            return s.substring(a, b + 1).trim();
+        }
+        return s.trim();
     }
 
     // ---------- audio capture ----------
@@ -243,10 +315,35 @@ public final class GeminiVoiceSearch {
 
     // ---------- Gemini ----------
 
-    private static String transcribe(String apiKey, String model, byte[] wav) throws Exception {
+    /** Escape a raw string so it's safe inside a JSON string literal. */
+    private static String jsonEscape(String s) {
+        if (s == null) {
+            return "";
+        }
+        StringBuilder b = new StringBuilder(s.length() + 16);
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '"':  b.append("\\\""); break;
+                case '\\': b.append("\\\\"); break;
+                case '\n': b.append("\\n"); break;
+                case '\r': b.append("\\r"); break;
+                case '\t': b.append("\\t"); break;
+                default:
+                    if (c < 0x20) {
+                        b.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        b.append(c);
+                    }
+            }
+        }
+        return b.toString();
+    }
+
+    private static String transcribe(String apiKey, String model, String prompt, byte[] wav) throws Exception {
         String b64 = Base64.encodeToString(wav, Base64.NO_WRAP);
         String body = "{\"contents\":[{\"parts\":["
-                + "{\"text\":\"Transcribe this spoken YouTube search query. Reply with ONLY the words spoken — no quotes, no punctuation, no extra commentary.\"},"
+                + "{\"text\":\"" + jsonEscape(prompt) + "\"},"
                 + "{\"inline_data\":{\"mime_type\":\"audio/wav\",\"data\":\"" + b64 + "\"}}"
                 + "]}]}";
         URL url = new URL("https://generativelanguage.googleapis.com/v1beta/models/"
@@ -339,6 +436,26 @@ public final class GeminiVoiceSearch {
         Log.d(TAG, "Gemini model set to " + model.trim());
     }
 
+    /** The system prompt (user override from prefs, else the baked default). */
+    private static String getPrompt(Context ctx) {
+        try {
+            String p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(PREF_PROMPT, null);
+            return (p != null && !p.isEmpty()) ? p : DEFAULT_PROMPT;
+        } catch (Throwable e) {
+            return DEFAULT_PROMPT;
+        }
+    }
+
+    /** Override the system prompt (used by GeminiKeyReceiver, set over adb). */
+    public static void savePrompt(Context ctx, String prompt) {
+        if (ctx == null || prompt == null || prompt.trim().isEmpty()) {
+            return;
+        }
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putString(PREF_PROMPT, prompt.trim()).apply();
+        Log.d(TAG, "Gemini prompt set (len=" + prompt.trim().length() + ")");
+    }
+
     /** Store the API key (used by GeminiKeyReceiver, set over adb). */
     public static void saveKey(Context ctx, String key) {
         if (ctx == null || key == null) {
@@ -352,7 +469,7 @@ public final class GeminiVoiceSearch {
         Log.d(TAG, "Gemini key saved (len=" + k.length() + ")");
     }
 
-    /** The key is set over adb (GeminiKeyReceiver) into prefs — see gemini_key.txt. */
+    /** The key is set over adb (GeminiKeyReceiver) into prefs — see gemini_setup.txt. */
     private static String loadKey(Context ctx) {
         String stored = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(PREF_KEY, null);
         return (stored != null && !stored.isEmpty()) ? stored : null;

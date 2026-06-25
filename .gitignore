@@ -71,3 +71,8 @@ fabric.properties
 *BAK.java
 hs_err_pid*.log
 gemini_key.txt
+gemini_setup.txt
+
+SmartTube-RayNeo-X3-Pro-bkp3/
+rayneo_*.txt
+rayneo_*.log
