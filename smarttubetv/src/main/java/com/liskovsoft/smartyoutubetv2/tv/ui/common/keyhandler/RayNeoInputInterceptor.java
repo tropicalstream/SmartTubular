@@ -755,7 +755,9 @@ public class RayNeoInputInterceptor {
                     return;
                 }
 
-                int lockedTitleSearchSection = mTitleSearchLocked ? getBrowseTitleSearchSection() : 0;
+                int lockedTitleSearchSection = mTitleSearchLocked
+                        && isTitleSearchOrbActive(mDownFocusView)
+                        ? getBrowseTitleSearchSection() : 0;
                 if (lockedTitleSearchSection != 0) {
                     requestTitleSearchFocus("injectClickLock");
                     if (lockedTitleSearchSection == 2) {
@@ -998,11 +1000,10 @@ public class RayNeoInputInterceptor {
         }
 
         // RayNeo Home taps often have no cursor coordinates and focus may still
-        // be on a video card. Use the physical touch DOWN area as a separate,
-        // tap-only route for the top search controls. Observed gallery rows are
-        // well below this band, so horizontal row swipes are unaffected.
-        boolean inTopSearchBand = mTouchDownY >= 0f && mTouchDownY <= 285f
-                && mTouchDownX >= 0f && mTouchDownX <= 520f;
+        // be on a video card. Use a calibrated touch-pad area around the actual
+        // title search tap, not a broad top-left band that can catch video rows.
+        boolean inTopSearchBand = mTouchDownY >= 130f && mTouchDownY <= 225f
+                && mTouchDownX >= 520f && mTouchDownX <= 835f;
         if (inTopSearchBand) {
             android.util.Log.d(TAG, "title search touch zone hit section=" + section
                     + " down=" + mTouchDownX + "," + mTouchDownY

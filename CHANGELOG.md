@@ -4,6 +4,41 @@ SmartTubular is a RayNeo X3 Pro fork of SmartTube. This changelog covers the
 RayNeo-specific additions on top of upstream SmartTube (base version 31.45).
 See [`CREDITS.md`](./CREDITS.md) for project lineage and licensing.
 
+## [0.4.2-beta] — Click calibration fix (EXPERIMENTAL)
+
+> ⚠️ **Experimental.** Point update on 0.4.1-beta.
+
+### ▶ Required setup after installing — Gemini voice search key (free, no billing)
+
+Voice search uses Google's free Gemini API (the glasses' own speech recognizer
+doesn't work for third-party apps). **No credit card / billing required.**
+
+1. **Get a free key:** <https://aistudio.google.com/app/apikey> → sign in →
+   "Create API key" → copy it. The free tier is plenty and needs no billing.
+2. **Send the key to the app over adb** (replace `YOUR_GEMINI_API_KEY`):
+
+   ```
+   adb shell am broadcast -a org.smarttube.beta.cc.SET_GEMINI_KEY \
+     -n org.smarttube.beta.cc/com.liskovsoft.smartyoutubetv2.tv.ui.common.keyhandler.GeminiKeyReceiver \
+     --es key "YOUR_GEMINI_API_KEY"
+   ```
+
+   You'll see a **"Gemini key saved"** toast. Do this once (re-do only after a
+   reinstall or after clearing app data).
+3. Open SmartTubular and tap the magnifying glass to search by voice.
+
+**Model:** the default is **`gemini-2.5-flash`**, which runs on the free tier with
+no billing. To switch models, re-broadcast with `--es model "gemini-2.5-flash-lite"`.
+Full details (and the optional custom prompt) are in
+[`gemini_setup.txt.example`](./gemini_setup.txt.example).
+
+### Fixed
+- **Top search clicks could hit the wrong target.** Tightened the home
+  title-search click routing: the top search touch zone is calibrated to
+  `x=520..835, y=130..225`, so the broad top-left fallback no longer steals
+  clicks meant for the video row below. A focused search-orb tap still activates
+  search — top search no longer falls through to a video.
+
 ## [0.4.1-beta] — Navigation fixes + brightness-reboot note (EXPERIMENTAL)
 
 > ⚠️ **Experimental.** Point update on 0.4-beta. Touch-pad navigation fixes plus
