@@ -294,7 +294,7 @@ public class RayNeoInputInterceptor {
                 // e.g. the search orb opens search instead of a video below it.
                 mDownFocusView = mActivity.getWindow() != null
                         ? mActivity.getWindow().getCurrentFocus() : null;
-                if (isContentFocus(mDownFocusView)) {
+                if (isContentFocus(mDownFocusView) && !isTouchInTitleSearchZone()) {
                     if (mTitleSearchLocked) {
                         android.util.Log.d(TAG, "title search lock cleared: content already focused");
                     }
@@ -755,8 +755,7 @@ public class RayNeoInputInterceptor {
                     return;
                 }
 
-                int lockedTitleSearchSection = mTitleSearchLocked
-                        && isTitleSearchOrbActive(mDownFocusView)
+                int lockedTitleSearchSection = isTitleSearchOrbActive(mDownFocusView)
                         ? getBrowseTitleSearchSection() : 0;
                 if (lockedTitleSearchSection != 0) {
                     requestTitleSearchFocus("injectClickLock");
@@ -1002,8 +1001,7 @@ public class RayNeoInputInterceptor {
         // RayNeo Home taps often have no cursor coordinates and focus may still
         // be on a video card. Use a calibrated touch-pad area around the actual
         // title search tap, not a broad top-left band that can catch video rows.
-        boolean inTopSearchBand = mTouchDownY >= 130f && mTouchDownY <= 225f
-                && mTouchDownX >= 520f && mTouchDownX <= 835f;
+        boolean inTopSearchBand = isTouchInTitleSearchZone();
         if (inTopSearchBand) {
             android.util.Log.d(TAG, "title search touch zone hit section=" + section
                     + " down=" + mTouchDownX + "," + mTouchDownY
@@ -1011,6 +1009,11 @@ public class RayNeoInputInterceptor {
             return section;
         }
         return 0;
+    }
+
+    private boolean isTouchInTitleSearchZone() {
+        return mTouchDownY >= 120f && mTouchDownY <= 220f
+                && mTouchDownX >= 500f && mTouchDownX <= 900f;
     }
 
     private void requestTitleSearchFocus(String reason) {
@@ -1042,6 +1045,7 @@ public class RayNeoInputInterceptor {
                 android.util.Log.d(TAG, "title search unlocked by explicit DOWN swipe");
             }
             mTitleSearchLocked = false;
+            mSearchOrbFocusUntilMs = 0L;
             return;
         }
 
